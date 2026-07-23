@@ -106,9 +106,10 @@ def test_cli_reports_required_agent_drive_without_traceback(
 
     assert main.cli() == 3
     error = capsys.readouterr().err
-    assert error.startswith("Agent Drive required:")
-    assert "https://example.test" in error
-    assert "Traceback" not in error
+    assert error == (
+        "Agent Drive required: Agent Drive is not enabled. "
+        "Request access: https://example.test\n"
+    )
 
 
 class StreamingSession:
