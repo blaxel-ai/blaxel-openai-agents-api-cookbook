@@ -20,9 +20,10 @@ from blaxel.core import SandboxInstance
 AGENTS_API_URL = "https://api.openai.com/v1/agents"
 WORKSPACE = "/workspace"
 REPORT_PATH = f"{WORKSPACE}/sample_report.txt"
+VERIFICATION_MARKER = "BLAXEL_AGENT_FILE_7C4E91"
 EXECUTOR_NAME = "openai-agents-api-executor"
 CODEX_VERSION = "0.146.0-alpha.3"
-DEFAULT_MODEL = "gpt-5.6-sol"
+DEFAULT_MODEL = "gpt-5.6"
 DEFAULT_REGION = "us-was-1"
 EXAMPLE_DIR = Path(__file__).resolve().parent
 
@@ -42,9 +43,10 @@ async def main() -> int:
                 agent={
                     "model": model,
                     "instructions": (
-                        "Read the requested workspace file directly. Return a concise report "
-                        "that names the file path, summarizes the main ideas, and states "
-                        "any caveat."
+                        "Read the requested workspace file directly. Include the exact "
+                        "verification marker found in that file. Return a concise report that "
+                        "names the file path, summarizes the main ideas, and states any caveat. "
+                        "If file access is unavailable, say so instead of guessing."
                     ),
                 },
                 environment={
@@ -67,17 +69,24 @@ async def main() -> int:
             await start_exec_server(sandbox, api_key, environment.environment_id)
 
             print("\nagent output:\n")
-            await stream_agent_output(
+            agent_output = await stream_agent_output(
                 session,
                 sandbox,
-                f"Create the report from {REPORT_PATH}.",
+                (
+                    f"Create the report from {REPORT_PATH}. Include the exact verification "
+                    "marker found in the file."
+                ),
             )
 
             # session.stream() returns only after the session.idle or session.failed
             # event. Use that event-derived status instead of an immediate GET, which
             # can briefly return the previous in_progress state in this preview.
             print(f"\nfinal status: {session.status}")
-            return 0 if session.status == "idle" else 2
+            if session.status != "idle":
+                return 2
+            verify_agent_output(agent_output)
+            print("verified workspace file read")
+            return 0
         finally:
             await cleanup(session, sandbox)
 
@@ -155,8 +164,9 @@ async def stream_agent_output(
     session: AsyncAgentSession,
     sandbox: SandboxInstance,
     prompt: str,
-) -> None:
+) -> str:
     saw_text_delta = False
+    output_parts: list[str] = []
     async for event in session.stream(input=prompt):
         if isinstance(event, SessionEnvironmentConnectedEvent):
             print("environment connected")
@@ -165,22 +175,34 @@ async def stream_agent_output(
                 sandbox,
                 f"environment failed: {event.environment.error}",
             )
-        saw_text_delta = print_event(event, saw_text_delta)
+        saw_text_delta, output_text = print_event(event, saw_text_delta)
+        if output_text:
+            output_parts.append(output_text)
         if event.type == "session.failed":
             await raise_with_executor_diagnostics(
                 sandbox,
                 f"session failed: {event.data.get('error')}",
             )
     print()
+    return "".join(output_parts)
 
 
-def print_event(event: SessionEvent, saw_text_delta: bool) -> bool:
+def print_event(event: SessionEvent, saw_text_delta: bool) -> tuple[bool, str]:
     if event.output_text_delta is not None:
         print(event.output_text_delta, end="", flush=True)
-        return True
+        return True, event.output_text_delta
     if event.output_text is not None and not saw_text_delta:
         print(event.output_text)
-    return saw_text_delta
+        return saw_text_delta, event.output_text
+    return saw_text_delta, ""
+
+
+def verify_agent_output(output: str) -> None:
+    if VERIFICATION_MARKER not in output:
+        raise RuntimeError(
+            f"agent output did not include the verification marker from {REPORT_PATH}; "
+            "the workspace file-read task did not complete"
+        )
 
 
 async def raise_with_executor_diagnostics(

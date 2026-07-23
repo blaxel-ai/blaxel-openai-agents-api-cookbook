@@ -1,127 +1,77 @@
-# OpenAI Agents API on Blaxel Sandboxes
+# OpenAI Agents API on Blaxel
 
-Run OpenAI's private-preview Agents API with a self-hosted Codex executor inside a disposable Blaxel Sandbox. One command creates the session and sandbox, runs a real file-based agent task, verifies the lifecycle, and cleans up both resources.
+Run a hosted OpenAI agent against a self-hosted Codex executor in a disposable Blaxel Sandbox.
 
-This repository is intentionally narrow. It demonstrates the provider contract with one session, one sandbox, and one agent turn before introducing persistence, orchestration, or multi-session patterns.
+> This uses the private-preview OpenAI Agents API, not the public OpenAI Agents SDK.
 
-This preview API is different from the public OpenAI Agents SDK. The Agents API hosts the agent session and connects to an executor that you run in your own environment. In this example, that environment is a Blaxel Sandbox.
+```mermaid
+flowchart LR
+    Run["./run.sh"] --> Session["OpenAI Agents API<br/>session"]
+    Run --> Sandbox["Blaxel Sandbox<br/>Codex executor"]
+    File["sample_report.txt"] --> Sandbox
+    Sandbox -- "outbound connection" --> Session
+    Session --> Result["verified result<br/>then cleanup"]
+```
 
-If you give this repository to a coding agent, ask it to read `AGENTS.md` first. Claude Code receives the same instructions through `CLAUDE.md`.
+## Quick start
 
-## What you get
-
-- A one-command setup and live example through `./run.sh`
-- A self-hosted OpenAI Agents API session backed by a Blaxel Sandbox
-- Command execution and file access without exposing an inbound sandbox port
-- Pinned OpenAI preview SDK, Blaxel SDK, model, and Codex executor versions
-- Explicit session and sandbox cleanup, plus a 15-minute sandbox lifetime
-- Local tests for the executor command, required credentials, and cleanup behavior
-
-## How it works
-
-| Surface | Responsibility |
-| --- | --- |
-| Your machine | Runs `run.sh` and `main.py`, creates the OpenAI session and Blaxel Sandbox, and streams the result |
-| OpenAI Agents API | Owns the hosted agent session, model turn, and self-hosted environment registration |
-| Blaxel Sandbox | Runs `codex exec-server` and provides the isolated `/workspace` filesystem |
-
-The executor connects outbound from the sandbox to OpenAI. The example does not open or publish a sandbox port.
-
-One run follows this lifecycle:
-
-1. Create a self-hosted OpenAI Agents API session
-2. Create a disposable Blaxel Sandbox
-3. Write `sample_report.txt` to `/workspace`
-4. Install the pinned Codex alpha inside the sandbox
-5. Start `codex exec-server` with the OpenAI environment ID
-6. Stream an agent turn that reads `/workspace/sample_report.txt`
-7. Delete the OpenAI session and Blaxel Sandbox
-
-## Prerequisites
-
-- Python 3.11 through 3.14
-- Git
-- An OpenAI organization and project enabled for the Agents API private preview
-- An OpenAI project API key for that enabled project
-- A Blaxel workspace and [Blaxel API key](https://docs.blaxel.ai/Security/Access-tokens#api-keys)
-- GitHub read access to the private [Agents API Python preview](https://github.com/OpenAI-Early-Access/agents-api-python-preview)
-
-The example creates real hosted resources and invokes an OpenAI model. Use a development workspace and credentials with the minimum required access.
-
-## 1. Clone the repository
-
-Clone this private repository using your normal GitHub authentication:
+You need Python 3.11–3.14, Git, preview-enabled OpenAI credentials, a Blaxel API key, and access to the private [Agents API Python preview](https://github.com/OpenAI-Early-Access/agents-api-python-preview).
 
 ```bash
 git clone https://github.com/blaxel-ai/openai-agents-api-cookbook.git
 cd openai-agents-api-cookbook
-```
 
-## 2. Configure credentials
-
-Export the three required values:
-
-```bash
 export OPENAI_API_KEY='<openai-project-key>'
 export BL_WORKSPACE='<blaxel-workspace>'
 export BL_API_KEY='<blaxel-api-key>'
-```
 
-Keep credentials in the process environment. Do not save real values in this repository.
-
-If your Git credential helper cannot read the private OpenAI preview repository, also provide a short-lived GitHub token with read access:
-
-```bash
+# Only needed when your Git credential helper cannot read the preview SDK:
 export GITHUB_TOKEN='<github-token>'
-```
 
-`run.sh` passes `GITHUB_TOKEN` to Git through process-only configuration. It does not write the token to Git config, source files, or `.env` files.
-
-## 3. Run the example
-
-Run the complete setup and live example:
-
-```bash
 ./run.sh
 ```
 
-The script checks the required credentials before it creates `.venv` or installs dependencies. It then installs the pinned dependency set and runs `main.py`.
+Credentials stay in the process environment. The script does not persist them to `.env` or Git config.
 
-A successful run includes these lifecycle signals:
+## A successful run
 
 ```text
 created OpenAI session ...
 started Blaxel sandbox ...
 environment connected
 final status: idle
+verified workspace file read
 deleted OpenAI session
 deleted Blaxel sandbox
 ```
 
-The generated report text can vary. Success requires the environment to connect, the session to finish with `idle`, and both cleanup messages to appear.
+The file-read marker matters: `idle` proves the turn ended, not that the agent completed the task.
 
-## Configuration
+## What happens
 
-The defaults are small and deterministic:
-
-| Environment variable | Default | Purpose |
+| Step | Owner | Action |
 | --- | --- | --- |
-| `OPENAI_MODEL` | `gpt-5.6-sol` | Model used for the agent turn |
-| `BL_REGION` | `us-was-1` | Region where Blaxel creates the sandbox |
+| 1 | `run.sh` | Checks access and installs the pinned dependencies |
+| 2 | OpenAI | Creates one hosted agent session |
+| 3 | Blaxel | Creates one sandbox and starts `codex exec-server` |
+| 4 | Agent | Reads `/workspace/sample_report.txt` and returns its marker |
+| 5 | `main.py` | Verifies the marker and deletes both resources |
 
-The preview dependencies are pinned across `pyproject.toml` and `main.py`:
+No inbound sandbox port is opened.
 
-| Dependency | Pinned version |
+## Defaults
+
+| Setting | Value |
 | --- | --- |
-| OpenAI Agents API Python SDK | `0.1.1` at preview commit `cced8d0` |
+| Model | `gpt-5.6` |
+| Region | `us-was-1` |
+| OpenAI preview SDK | `0.1.1` at `cced8d0` |
 | Blaxel Python SDK | `0.3.2` |
 | Codex executor | `0.146.0-alpha.3` |
 
-These versions are tested as one set. Refresh them together when the private preview changes.
+Override the first two with `OPENAI_MODEL` and `BL_REGION`. Refresh the SDK, model, and executor pins together.
 
-## Validate changes
-
-After `./run.sh` creates the environment, run the non-destructive local checks:
+## Develop
 
 ```bash
 .venv/bin/python -m pytest
@@ -130,38 +80,36 @@ After `./run.sh` creates the environment, run the non-destructive local checks:
 bash -n run.sh
 ```
 
-`./run.sh` is the live integration test. It creates hosted resources and invokes a model, so run it only when the task authorizes a live test.
+`./run.sh` is the live integration test: it creates hosted resources and invokes a model.
 
-## Repository map
+## If it fails
+
+| Symptom | Check |
+| --- | --- |
+| Missing OpenAI or Blaxel variable | Export the three required keys shown above |
+| Preview SDK cannot be read | Export a `GITHUB_TOKEN` with read access |
+| Agents API access error | Confirm the OpenAI project has preview access |
+| Executor never connects | Check outbound access to `api.openai.com` and `registry.npmjs.org` |
+| Marker verification fails | The environment connected, but the agent did not prove it read the file |
+
+Cleanup is attempted on every handled failure. The sandbox's 15-minute lifetime is only a backstop.
+
+## Files
 
 | Path | Purpose |
 | --- | --- |
-| `main.py` | Complete OpenAI session, Blaxel sandbox, executor, stream, and cleanup lifecycle |
-| `run.sh` | Credential preflight, isolated Python setup, dependency installation, and example entrypoint |
-| `sample_report.txt` | Deterministic file used by the agent task |
-| `tests/test_main.py` | Local contract and cleanup tests |
-| `AGENTS.md` | Canonical instructions for coding agents working in this repository |
-| `CLAUDE.md` | Claude Code pointer to the canonical `AGENTS.md` instructions |
+| `main.py` | Complete session, sandbox, executor, verification, and cleanup flow |
+| `run.sh` | Access preflight and one-command setup |
+| `sample_report.txt` | File and marker read by the hosted agent |
+| `tests/test_main.py` | Local contract and failure-path tests |
+| `AGENTS.md` | Instructions for coding agents |
+| `CLAUDE.md` | Claude Code pointer to `AGENTS.md` |
 
-## Troubleshooting
+This first example intentionally stops at one session, one sandbox, and one file task. Agent Drive, persistence, webhooks, and multi-session orchestration come later.
 
-- `OPENAI_API_KEY is required`: use a project key from the OpenAI organization enabled for this preview
-- `BL_WORKSPACE is required` or `BL_API_KEY is required`: export a scoped key for the Blaxel workspace you want to use
-- `Git cannot read the private OpenAI preview SDK`: export a `GITHUB_TOKEN` that can read `OpenAI-Early-Access/agents-api-python-preview`
-- The Agents API returns an access error: confirm that the organization and project tied to the key have preview access
-- The executor exits before connecting: inspect the printed process diagnostics and confirm outbound access to `api.openai.com` and `registry.npmjs.org`
+## Links
 
-The example attempts cleanup after every handled runtime failure. The 15-minute sandbox lifetime is an additional backstop, not a replacement for explicit deletion.
-
-## Scope
-
-This first version proves the core self-hosted provider contract. It does not claim production hardening, multi-tenant guarantees beyond the Blaxel Sandbox boundary, shared model memory, Agent Drive consistency, webhook orchestration, or automatic sandbox provisioning.
-
-Agent Drive and multi-session handoffs are useful follow-up patterns. They remain optional so the baseline path stays small, deterministic, and easy to reproduce.
-
-## Resources
-
-- [OpenAI Agents API Python preview](https://github.com/OpenAI-Early-Access/agents-api-python-preview)
-- [Blaxel Sandbox documentation](https://docs.blaxel.ai/Sandboxes/Overview)
+- [Blaxel Sandboxes](https://docs.blaxel.ai/Sandboxes/Overview)
+- [Blaxel API keys](https://docs.blaxel.ai/Security/Access-tokens#api-keys)
 - [Blaxel Python SDK](https://github.com/blaxel-ai/sdk-python)
-- [Blaxel access token documentation](https://docs.blaxel.ai/Security/Access-tokens#api-keys)
+- [OpenAI Agents API Python preview](https://github.com/OpenAI-Early-Access/agents-api-python-preview)

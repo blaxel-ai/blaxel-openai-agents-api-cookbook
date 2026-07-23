@@ -5,6 +5,8 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -12,7 +14,7 @@ import main
 
 
 def test_preview_versions_are_explicit() -> None:
-    assert main.DEFAULT_MODEL == "gpt-5.6-sol"
+    assert main.DEFAULT_MODEL == "gpt-5.6"
     assert main.CODEX_VERSION == "0.146.0-alpha.3"
 
 
@@ -31,6 +33,57 @@ def test_required_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     with pytest.raises(RuntimeError, match="OPENAI_API_KEY is required"):
         main.required_env("OPENAI_API_KEY")
+
+
+def test_sample_report_contains_verification_marker() -> None:
+    sample_report = (Path(__file__).parents[1] / "sample_report.txt").read_text(
+        encoding="utf-8"
+    )
+
+    assert main.VERIFICATION_MARKER in sample_report
+
+
+def test_verify_agent_output_requires_workspace_marker() -> None:
+    with pytest.raises(RuntimeError, match="workspace file-read task did not complete"):
+        main.verify_agent_output("The workspace filesystem is not accessible.")
+
+
+def test_verify_agent_output_accepts_workspace_marker() -> None:
+    main.verify_agent_output(f"Verification marker: {main.VERIFICATION_MARKER}")
+
+
+class StreamingSession:
+    async def stream(self, *, input: str) -> Any:
+        assert input == "read the report"
+        for event in [
+            SimpleNamespace(
+                type="session.turn.output_text.delta",
+                output_text_delta="Verification marker: ",
+                output_text=None,
+            ),
+            SimpleNamespace(
+                type="session.turn.output_text.delta",
+                output_text_delta=main.VERIFICATION_MARKER,
+                output_text=None,
+            ),
+            SimpleNamespace(
+                type="session.idle",
+                output_text_delta=None,
+                output_text=None,
+            ),
+        ]:
+            yield event
+
+
+@pytest.mark.asyncio
+async def test_stream_agent_output_returns_text_deltas() -> None:
+    output = await main.stream_agent_output(  # type: ignore[arg-type]
+        StreamingSession(),
+        object(),
+        "read the report",
+    )
+
+    assert output == f"Verification marker: {main.VERIFICATION_MARKER}"
 
 
 @dataclass

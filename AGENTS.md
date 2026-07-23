@@ -1,94 +1,75 @@
-# Repository instructions
+# Agent instructions
 
-## Mission
+## Goal
 
-Keep this repository a minimal, reproducible cookbook for running the private-preview OpenAI Agents API with a self-hosted Codex executor in a Blaxel Sandbox.
+Keep this a minimal, reproducible example of the private-preview OpenAI Agents API using a self-hosted Codex executor in a Blaxel Sandbox.
 
-This is a runnable example, not a general framework. Preserve the one-command baseline:
+The baseline is:
 
 ```bash
 ./run.sh
 ```
+
+Do not turn it into a framework.
 
 ## Read first
 
-Read these files before changing or running the example:
+1. `README.md` — user workflow
+2. `main.py` — live resource lifecycle
+3. `run.sh` — access and installation preflight
+4. `tests/test_main.py` — executable contract
 
-1. `README.md` for the user workflow and expected output
-2. `main.py` for the resource lifecycle and pinned runtime values
-3. `run.sh` for credential and installation behavior
-4. `tests/test_main.py` for the local contract
+`CLAUDE.md` imports this file. Keep instructions here instead of duplicating them.
 
-`CLAUDE.md` imports this file. Keep the canonical instructions here instead of duplicating them across agent-specific files.
+## Live path
 
-## System model
-
-The OpenAI Agents API owns the hosted agent session and model turn. The Blaxel Sandbox is the self-hosted execution environment.
-
-`main.py` performs this sequence:
-
-1. Create an OpenAI session with a `self_hosted` environment
-2. Create a Blaxel Sandbox using `blaxel/node:latest`
-3. Copy `sample_report.txt` to `/workspace/sample_report.txt`
-4. Install the pinned Codex alpha in the sandbox
-5. Start `codex exec-server` as a keep-alive sandbox process
-6. Stream a turn that reads the workspace file
-7. Delete the OpenAI session and sandbox in `finally`
-
-The executor connects outbound to OpenAI. No inbound sandbox port is required.
-
-## Blaxel in this example
-
-Blaxel provides the isolated Linux runtime where Codex executes commands and reads files. The Python SDK reads its credentials from:
-
-- `BL_WORKSPACE`: target Blaxel workspace
-- `BL_API_KEY`: API key scoped to that workspace
-- `BL_REGION`: optional sandbox region, defaulting to `us-was-1`
-
-Each run creates a uniquely named sandbox with:
-
-- image `blaxel/node:latest`
-- 2048 MB of memory
-- a 15-minute lifetime
-- label `purpose=openai-agents-api-cookbook`
-- workspace directory `/workspace`
-
-The sandbox is a real hosted resource. Do not run the live example unless the task authorizes resource creation and model usage.
-
-## Required access
-
-The live path requires:
-
-- `OPENAI_API_KEY` for a project enabled for the Agents API private preview
-- `BL_WORKSPACE` and `BL_API_KEY` for a development Blaxel workspace
-- Git access to `OpenAI-Early-Access/agents-api-python-preview`
-- `GITHUB_TOKEN` only when the existing Git credential helper cannot read that repository
-
-Check whether variables are present without printing their values. Never echo, persist, log, or commit credentials.
-
-Do not invent placeholder credentials and then attempt the live run. If access is missing, report the missing variable or repository permission precisely.
-
-## Run and verify
-
-Run the example from the repository root:
-
-```bash
-./run.sh
+```text
+OpenAI session
+    ↕ outbound executor connection
+Blaxel Sandbox
+    └── /workspace/sample_report.txt
 ```
 
-Treat the run as successful only when all of these signals are present:
+One run creates one OpenAI session and one Blaxel Sandbox, reads one file, verifies its marker, and deletes both resources.
 
-- the OpenAI session is created
-- the Blaxel Sandbox is created
-- the self-hosted environment connects
-- the agent reads `/workspace/sample_report.txt`
-- the final session status is `idle`
-- the OpenAI session is deleted
-- the Blaxel Sandbox is deleted
+Required environment:
 
-The prose generated from `sample_report.txt` is non-deterministic. Do not compare its wording exactly.
+- `OPENAI_API_KEY`
+- `BL_WORKSPACE`
+- `BL_API_KEY`
+- `GITHUB_TOKEN` only when Git cannot read the private preview SDK
+- `BL_REGION` and `OPENAI_MODEL` are optional overrides
 
-Run the local checks after setup:
+Check presence without printing values. Never persist credentials.
+
+## Acceptance
+
+A live run passes only when every item is true:
+
+- OpenAI session created
+- Blaxel Sandbox created
+- self-hosted environment connected
+- exact marker returned from `/workspace/sample_report.txt`
+- final status is `idle`
+- OpenAI session explicitly deleted
+- Blaxel Sandbox explicitly deleted
+
+The generated prose is non-deterministic. The marker is not. `idle` without the marker is failure.
+
+## Guardrails
+
+- Do not run the live path without authorization to create resources and invoke a model
+- Keep one session, one sandbox, and one file task in the baseline
+- Keep Agent Drive, persistence, webhooks, and multi-session flows optional
+- Do not open an inbound sandbox port for this example
+- Preserve explicit model, SDK, executor, image, region, and lifetime pins
+- Inspect the private preview source before changing a pin
+- Add tests when changing credentials, commands, streaming, verification, or cleanup
+- Never hide cleanup failures
+- Do not commit generated environments, caches, credentials, or run output
+- Do not commit, push, publish, or open a PR without explicit authorization
+
+## Checks
 
 ```bash
 .venv/bin/python -m pytest
@@ -97,32 +78,16 @@ Run the local checks after setup:
 bash -n run.sh
 ```
 
-Local checks do not replace the live lifecycle test when a change affects the OpenAI session, Blaxel Sandbox, executor process, streaming, or cleanup.
+Local checks do not replace `./run.sh` when the live lifecycle changes.
 
-## Cleanup rules
+## Cleanup
 
-Never weaken or hide cleanup failures to make a run appear successful. `cleanup()` must attempt both deletions even when the first deletion fails.
+`cleanup()` must attempt both deletions even when the first fails. The 15-minute sandbox lifetime is a backstop, not success evidence.
 
-The sandbox's 15-minute lifetime is a backstop only. A successful run must explicitly delete the OpenAI session and sandbox.
+If interrupted, use the printed IDs to confirm both resources are gone before reporting success.
 
-If a process is interrupted before cleanup, use the printed resource names or IDs to inspect remaining resources. Confirm cleanup before declaring the live test complete.
+## Source of truth
 
-## Change rules
-
-- Keep the baseline to one session, one sandbox, and one file-based task
-- Keep Agent Drive, persistence, webhooks, and multi-session handoffs optional
-- Do not expose a sandbox port unless a new example specifically requires one
-- Preserve explicit model, SDK, and executor pins
-- Refresh the private preview SDK, Codex alpha, and Blaxel SDK together
-- Add or update tests when changing lifecycle, command, credential, or cleanup behavior
-- Prefer the smallest change that preserves the one-command path
-- Do not commit generated environments, caches, credentials, or run output
-- Do not push, publish, open a pull request, or create external resources unless the user explicitly authorizes that action
-
-## Version sources
-
-- `pyproject.toml` pins the OpenAI Agents API Python preview commit and Blaxel SDK
-- `main.py` pins the OpenAI model, Codex executor, sandbox image, region, and lifetime
-- the private `OpenAI-Early-Access/agents-api-python-preview` repository is the source of truth for preview SDK behavior
-
-Do not update a version from memory. Inspect the current private preview source and released dependencies, then rerun local checks and an authorized live test.
+- `pyproject.toml` pins the OpenAI preview SDK and Blaxel SDK
+- `main.py` pins the model, Codex executor, sandbox image, region, and lifetime
+- `OpenAI-Early-Access/agents-api-python-preview` defines preview behavior
