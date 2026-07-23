@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=77,<82"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "blaxel-openai-agents-api-cookbook"
+version = "0.1.0"
+description = "Run the OpenAI Agents API self-hosted executor in a Blaxel Sandbox"
+readme = "README.md"
+requires-python = ">=3.11,<3.15"
+dependencies = [
+  "agent-api-sdk @ git+https://github.com/OpenAI-Early-Access/agents-api-python-preview.git@cced8d0e7b300ee41ad7987573590d0196a63d41",
+  "blaxel==0.3.2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.4,<9",
+  "pytest-asyncio>=1.2,<2",
+  "ruff>=0.15.15,<0.16",
+]
+
+[tool.setuptools]
+py-modules = ["main"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]

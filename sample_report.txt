@@ -1,0 +1,5 @@
+Blaxel Sandboxes provide isolated compute environments for AI agents.
+
+This cookbook connects a Blaxel Sandbox to an OpenAI Agents API self-hosted session. The Codex executor runs inside the sandbox, reads workspace files, and connects outbound to OpenAI without exposing an inbound port.
+
+The example is intentionally temporary. It deletes the OpenAI session and Blaxel Sandbox after the agent finishes, while a 15-minute sandbox lifetime provides a cleanup backstop.
