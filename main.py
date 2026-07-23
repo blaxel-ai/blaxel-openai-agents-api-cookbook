@@ -1,28 +1,33 @@
-"""Run an OpenAI Agents API self-hosted session in a Blaxel Sandbox."""
+"""Run an OpenAI Agents API session with Blaxel-hosted durable context."""
 
 from __future__ import annotations
 
 import asyncio
 import os
 import shlex
+import sys
 import uuid
 from pathlib import Path
 
-from agent_api_sdk import (
-    AgentAPISDK,
-    AsyncAgentSession,
-    SessionEnvironmentConnectedEvent,
-    SessionEnvironmentFailedEvent,
-    SessionEvent,
-)
+from agent_api_sdk import AgentAPISDK, AsyncAgentSession
 from blaxel.core import SandboxInstance
 
-AGENTS_API_URL = "https://api.openai.com/v1/agents"
-WORKSPACE = "/workspace"
-REPORT_PATH = f"{WORKSPACE}/sample_report.txt"
+from context_store import (
+    AgentDriveRequiredError,
+    ContextStore,
+    mount_context_store,
+    resolve_context_store,
+    sandbox_labels,
+)
+from runtime import (
+    WORKSPACE,
+    cleanup,
+    install_codex,
+    start_exec_server,
+    stream_agent_output,
+)
+
 VERIFICATION_MARKER = "BLAXEL_AGENT_FILE_7C4E91"
-EXECUTOR_NAME = "openai-agents-api-executor"
-CODEX_VERSION = "0.146.0-alpha.3"
 DEFAULT_MODEL = "gpt-5.6"
 DEFAULT_REGION = "us-was-1"
 EXAMPLE_DIR = Path(__file__).resolve().parent
@@ -30,23 +35,30 @@ EXAMPLE_DIR = Path(__file__).resolve().parent
 
 async def main() -> int:
     api_key = required_env("OPENAI_API_KEY")
-    required_env("BL_WORKSPACE")
+    workspace = required_env("BL_WORKSPACE")
     required_env("BL_API_KEY")
     model = os.environ.get("OPENAI_MODEL", DEFAULT_MODEL)
     region = os.environ.get("BL_REGION", DEFAULT_REGION)
     session: AsyncAgentSession | None = None
     sandbox: SandboxInstance | None = None
+    store = await resolve_context_store(workspace=workspace, region=region)
+    print_context_store(store)
 
     async with AgentAPISDK(api_key=api_key) as client:
         try:
+            sandbox = await create_sandbox(region)
+            await mount_context_store(sandbox, store)
+            await prepare_context(sandbox, store)
+            await install_codex(sandbox)
+
             session = await client.sessions.create(
                 agent={
                     "model": model,
                     "instructions": (
-                        "Read the requested workspace file directly. Include the exact "
-                        "verification marker found in that file. Return a concise report that "
-                        "names the file path, summarizes the main ideas, and states any caveat. "
-                        "If file access is unavailable, say so instead of guessing."
+                        "Work only inside /workspace/context. Read the requested source file "
+                        "directly, write the requested Markdown artifact, and include the exact "
+                        "verification marker in both the artifact and your response. If file "
+                        "access is unavailable, say so instead of guessing."
                     ),
                 },
                 environment={
@@ -61,11 +73,6 @@ async def main() -> int:
                 )
 
             print(f"created OpenAI session {session.id}")
-            sandbox = await create_sandbox(region)
-            await sandbox.fs.write(
-                REPORT_PATH,
-                (EXAMPLE_DIR / "sample_report.txt").read_text(encoding="utf-8"),
-            )
             await start_exec_server(sandbox, api_key, environment.environment_id)
 
             print("\nagent output:\n")
@@ -73,8 +80,10 @@ async def main() -> int:
                 session,
                 sandbox,
                 (
-                    f"Create the report from {REPORT_PATH}. Include the exact verification "
-                    "marker found in the file."
+                    f"Read {store.input_path}. Write a concise report to {store.output_path}. "
+                    "Name the source path, summarize the main ideas, state one caveat, and "
+                    "include the exact verification marker from the source. Then respond with "
+                    "the marker and output path."
                 ),
             )
 
@@ -84,8 +93,14 @@ async def main() -> int:
             print(f"\nfinal status: {session.status}")
             if session.status != "idle":
                 return 2
-            verify_agent_output(agent_output)
-            print("verified workspace file read")
+            artifact = await sandbox.fs.read(store.output_path)
+            verify_result(agent_output, artifact, store)
+            print(f"verified agent artifact {store.output_path}")
+            if store.drive_output_path is not None:
+                print(
+                    f"kept durable result on Agent Drive {store.drive.name}:"
+                    f"{store.drive_output_path}"
+                )
             return 0
         finally:
             await cleanup(session, sandbox)
@@ -107,138 +122,62 @@ async def create_sandbox(region: str) -> SandboxInstance:
             "memory": 2048,
             "region": region,
             "ttl": "15m",
-            "labels": {"purpose": "openai-agents-api-cookbook"},
+            "labels": sandbox_labels(),
         }
     )
     print(f"started Blaxel sandbox {name}")
     return sandbox
 
 
-async def start_exec_server(
-    sandbox: SandboxInstance,
-    api_key: str,
-    environment_id: str,
-) -> None:
-    install = await sandbox.process.exec(
+async def prepare_context(sandbox: SandboxInstance, store: ContextStore) -> None:
+    mkdir = await sandbox.process.exec(
         {
-            "name": "install-codex",
-            "command": f"npm install --global @openai/codex@{CODEX_VERSION}",
-            "working_dir": "/tmp",
-            "wait_for_completion": True,
-            "timeout": 60,
-        }
-    )
-    if install.exit_code != 0:
-        raise RuntimeError(
-            "Codex installation failed:\n"
-            f"{install.stderr or install.stdout or '(no process output)'}"
-        )
-
-    command = exec_server_command(environment_id)
-    print(f"starting Codex {CODEX_VERSION} executor")
-    await sandbox.process.exec(
-        {
-            "name": EXECUTOR_NAME,
-            "command": shlex.join(command),
+            "name": "prepare-context",
+            "command": f"mkdir -p {shlex.quote(store.run_path)}",
             "working_dir": WORKSPACE,
-            "env": {"CODEX_API_KEY": api_key},
-            "wait_for_completion": False,
-            "keep_alive": True,
-            "timeout": 0,
+            "wait_for_completion": True,
+            "timeout": 30,
         }
+    )
+    if mkdir.exit_code != 0:
+        raise RuntimeError(
+            "Context directory creation failed:\n"
+            f"{mkdir.stderr or mkdir.stdout or '(no process output)'}"
+        )
+    await sandbox.fs.write(
+        store.input_path,
+        (EXAMPLE_DIR / "sample_report.txt").read_text(encoding="utf-8"),
     )
 
 
-def exec_server_command(environment_id: str) -> list[str]:
-    return [
-        "codex",
-        "exec-server",
-        "--remote",
-        f"{AGENTS_API_URL}/api",
-        "--environment-id",
-        environment_id,
-    ]
-
-
-async def stream_agent_output(
-    session: AsyncAgentSession,
-    sandbox: SandboxInstance,
-    prompt: str,
-) -> str:
-    saw_text_delta = False
-    output_parts: list[str] = []
-    async for event in session.stream(input=prompt):
-        if isinstance(event, SessionEnvironmentConnectedEvent):
-            print("environment connected")
-        if isinstance(event, SessionEnvironmentFailedEvent):
-            await raise_with_executor_diagnostics(
-                sandbox,
-                f"environment failed: {event.environment.error}",
-            )
-        saw_text_delta, output_text = print_event(event, saw_text_delta)
-        if output_text:
-            output_parts.append(output_text)
-        if event.type == "session.failed":
-            await raise_with_executor_diagnostics(
-                sandbox,
-                f"session failed: {event.data.get('error')}",
-            )
-    print()
-    return "".join(output_parts)
-
-
-def print_event(event: SessionEvent, saw_text_delta: bool) -> tuple[bool, str]:
-    if event.output_text_delta is not None:
-        print(event.output_text_delta, end="", flush=True)
-        return True, event.output_text_delta
-    if event.output_text is not None and not saw_text_delta:
-        print(event.output_text)
-        return saw_text_delta, event.output_text
-    return saw_text_delta, ""
-
-
-def verify_agent_output(output: str) -> None:
-    if VERIFICATION_MARKER not in output:
+def verify_result(agent_output: str, artifact: str, store: ContextStore) -> None:
+    if VERIFICATION_MARKER not in agent_output:
         raise RuntimeError(
-            f"agent output did not include the verification marker from {REPORT_PATH}; "
-            "the workspace file-read task did not complete"
+            f"agent response did not include the verification marker from {store.input_path}"
+        )
+    if VERIFICATION_MARKER not in artifact:
+        raise RuntimeError(
+            f"agent artifact {store.output_path} did not include the verification marker"
         )
 
 
-async def raise_with_executor_diagnostics(
-    sandbox: SandboxInstance,
-    message: str,
-) -> None:
-    process = await sandbox.process.get(EXECUTOR_NAME)
-    status = getattr(process.status, "value", str(process.status))
-    logs = process.stderr or process.stdout or process.logs or "(no executor output)"
-    raise RuntimeError(f"{message}\nexecutor status: {status}\n{logs}")
+def print_context_store(store: ContextStore) -> None:
+    if store.mode == "agent-drive":
+        print(f"Agent Drive: using {store.drive.name}")
+        return
+    print(f"Agent Drive: {store.reason}")
+    if "not enabled" in (store.reason or ""):
+        print(f"Request access: {store.access_url}")
+    print("Continuing with disposable sandbox context.")
 
 
-async def cleanup(
-    session: AsyncAgentSession | None,
-    sandbox: SandboxInstance | None,
-) -> None:
-    errors: list[Exception] = []
-    if session is not None:
-        try:
-            await session.delete()
-            print("deleted OpenAI session")
-        except Exception as error:
-            errors.append(error)
-            print(f"cleanup error: could not delete OpenAI session: {error}")
-
-    if sandbox is not None:
-        try:
-            await sandbox.delete()
-            print("deleted Blaxel sandbox")
-        except Exception as error:
-            errors.append(error)
-            print(f"cleanup error: could not delete Blaxel sandbox: {error}")
-
-    if errors:
-        raise ExceptionGroup("cookbook cleanup failed", errors)
+def cli() -> int:
+    try:
+        return asyncio.run(main())
+    except AgentDriveRequiredError as error:
+        print(f"Agent Drive required: {error}", file=sys.stderr)
+        return 3
 
 
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main()))
+    raise SystemExit(cli())

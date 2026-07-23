@@ -11,15 +11,17 @@ from typing import Any
 import pytest
 
 import main
+import runtime
+from context_store import ContextStore
 
 
 def test_preview_versions_are_explicit() -> None:
     assert main.DEFAULT_MODEL == "gpt-5.6"
-    assert main.CODEX_VERSION == "0.146.0-alpha.3"
+    assert runtime.CODEX_VERSION == "0.146.0-alpha.3"
 
 
 def test_exec_server_command_targets_agents_api() -> None:
-    assert main.exec_server_command("env_test") == [
+    assert runtime.exec_server_command("env_test") == [
         "codex",
         "exec-server",
         "--remote",
@@ -43,13 +45,70 @@ def test_sample_report_contains_verification_marker() -> None:
     assert main.VERIFICATION_MARKER in sample_report
 
 
-def test_verify_agent_output_requires_workspace_marker() -> None:
-    with pytest.raises(RuntimeError, match="workspace file-read task did not complete"):
-        main.verify_agent_output("The workspace filesystem is not accessible.")
+def ephemeral_store() -> ContextStore:
+    return ContextStore(
+        mode="ephemeral",
+        run_id="test-run",
+        access_url="https://example.test/drives",
+    )
 
 
-def test_verify_agent_output_accepts_workspace_marker() -> None:
-    main.verify_agent_output(f"Verification marker: {main.VERIFICATION_MARKER}")
+def test_verify_result_requires_response_marker() -> None:
+    with pytest.raises(RuntimeError, match="agent response did not include"):
+        main.verify_result(
+            "The workspace filesystem is not accessible.",
+            f"Marker: {main.VERIFICATION_MARKER}",
+            ephemeral_store(),
+        )
+
+
+def test_verify_result_requires_artifact_marker() -> None:
+    with pytest.raises(RuntimeError, match="agent artifact"):
+        main.verify_result(
+            f"Marker: {main.VERIFICATION_MARKER}",
+            "The marker was omitted.",
+            ephemeral_store(),
+        )
+
+
+def test_verify_result_accepts_both_markers() -> None:
+    marker = f"Verification marker: {main.VERIFICATION_MARKER}"
+    main.verify_result(marker, marker, ephemeral_store())
+
+
+def test_print_context_store_shows_native_access_page(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    store = ContextStore(
+        mode="ephemeral",
+        run_id="test-run",
+        access_url="https://app.blaxel.ai/demo/global-agentic-network/drives",
+        reason="Agent Drive is not enabled for workspace 'demo'",
+    )
+
+    main.print_context_store(store)
+
+    output = capsys.readouterr().out
+    assert "Request access: https://app.blaxel.ai/demo/global-agentic-network/drives" in output
+    assert "Continuing with disposable sandbox context." in output
+
+
+def test_cli_reports_required_agent_drive_without_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def access_required() -> int:
+        raise main.AgentDriveRequiredError(
+            "Agent Drive is not enabled. Request access: https://example.test"
+        )
+
+    monkeypatch.setattr(main, "main", access_required)
+
+    assert main.cli() == 3
+    error = capsys.readouterr().err
+    assert error.startswith("Agent Drive required:")
+    assert "https://example.test" in error
+    assert "Traceback" not in error
 
 
 class StreamingSession:
@@ -77,7 +136,7 @@ class StreamingSession:
 
 @pytest.mark.asyncio
 async def test_stream_agent_output_returns_text_deltas() -> None:
-    output = await main.stream_agent_output(  # type: ignore[arg-type]
+    output = await runtime.stream_agent_output(  # type: ignore[arg-type]
         StreamingSession(),
         object(),
         "read the report",
@@ -106,7 +165,7 @@ async def test_cleanup_deletes_session_and_sandbox() -> None:
     session = Deletable()
     sandbox = Deletable()
 
-    await main.cleanup(session, sandbox)  # type: ignore[arg-type]
+    await runtime.cleanup(session, sandbox)  # type: ignore[arg-type]
 
     assert session.deleted
     assert sandbox.deleted
@@ -118,7 +177,7 @@ async def test_cleanup_attempts_both_deletions_before_failing() -> None:
     sandbox = Deletable()
 
     with pytest.raises(ExceptionGroup, match="cookbook cleanup failed"):
-        await main.cleanup(session, sandbox)  # type: ignore[arg-type]
+        await runtime.cleanup(session, sandbox)  # type: ignore[arg-type]
 
     assert session.deleted
     assert sandbox.deleted
