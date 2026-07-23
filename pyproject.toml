@@ -21,7 +21,7 @@ dev = [
 ]
 
 [tool.setuptools]
-py-modules = ["main"]
+py-modules = ["context_store", "main", "runtime"]
 
 [tool.pytest.ini_options]
 addopts = "-q"
