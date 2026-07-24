@@ -1,46 +1,40 @@
 # OpenAI Agents API on Blaxel
 
-Run an OpenAI-hosted agent on a self-hosted Codex executor in a Blaxel Sandbox. Agent Drive keeps the input and generated artifact after the temporary session and sandbox are gone.
+Use this starter when an AI agent needs to run commands, work with files, or create deliverables, but you do not want it operating on your laptop or production server.
+
+This repo connects an OpenAI-hosted agent to a disposable Blaxel cloud computer. Agent Drive can keep selected files after that computer is deleted, so a fresh agent can continue the work later.
 
 ```mermaid
 flowchart LR
-    Run["./run.sh"] --> Drive{"Agent Drive access?"}
-    Drive -- "yes" --> Durable["Mount durable context"]
-    Drive -- "no" --> Link["Show access page"]
-    Link --> Temporary["Use temporary context"]
-    Durable --> Agent["OpenAI session +<br/>Blaxel Sandbox"]
-    Temporary --> Agent
-    Agent --> Result["Verify agent artifact"]
-    Result --> Cleanup["Delete session + sandbox"]
-    Durable -. "artifact survives cleanup" .-> Kept["Agent Drive"]
+    Agent["OpenAI-hosted agent"] --> Computer["Blaxel cloud computer<br/>(files, commands, tools)"]
+    Computer --> Output["Useful output<br/>(code, reports, datasets)"]
+    Output --> Choice{"Agent Drive enabled<br/>and available?"}
+    Choice -->|"Disabled or unavailable"| Done["Delete the computer<br/>temporary files disappear"]
+    Choice -->|"Yes (auto default)"| Drive["Agent Drive<br/>(selected files persist)"]
+    Drive --> Next["Fresh agent<br/>continues the work"]
 ```
 
 ## Prompt your agent
 
-Copy this prompt into any coding agent with terminal access:
+Copy this into a coding agent with terminal access:
 
 ```text
-Clone https://github.com/blaxel-ai/openai-agents-api-cookbook.git and run the example end to end.
+Clone https://github.com/blaxel-ai/openai-agents-api-cookbook.git and read AGENTS.md.
 
-1. Read AGENTS.md first, then follow README.md.
-2. Prepare Blaxel. The run requires `BL_WORKSPACE` and `BL_API_KEY`; reuse them when present and check presence only. Use `bl version` and `bl workspaces` to verify the CLI and intended workspace. If needed, install the CLI from https://docs.blaxel.ai/cli-reference/introduction, then run `bl login <workspace>` and wait for me to finish browser login. If this agent supports skills, use installed `blaxel-cli` or `blaxel-sdk` skills for setup guidance; ask before installing missing global skills. CLI login helps with setup but does not replace the two required environment variables. Never print or save a secret.
-3. Prepare OpenAI. Make sure `OPENAI_API_KEY` is available without printing it and belongs to the OpenAI project you want to use. No extra OpenAI skills are required. Confirm Git can read the Agents API SDK source pinned by this checkout through existing credentials. If it cannot, report that packaging-access blocker and stop; never ask me to paste a GitHub token into chat. If OpenAI setup needs the web, use Computer Use in Codex or Claude Code's Chrome integration when available to open the official account, project, or API key page. Pause for me at sign-in, MFA, or secret entry, and ask before creating a key or changing access. Never print, paste into chat, or save a secret.
-4. Check for Python 3.11-3.14 and Git. If either is missing, tell me exactly what is needed and how to install it.
-5. Run ./run.sh with the default Agent Drive auto mode. Do not change source files, commit, push, or open a PR.
-6. Confirm that the OpenAI session and Blaxel Sandbox were created, the agent artifact was verified, the final status was idle, and both temporary resources were deleted. If Agent Drive is unavailable, include the exact access-request URL and confirm that the temporary fallback completed.
-7. Finish with the artifact path, whether it persisted on Agent Drive, and any action I still need to take.
+Without printing or saving secrets, confirm that OPENAI_API_KEY, BL_WORKSPACE, and BL_API_KEY are available and that the pinned Agents API client can be installed.
+
+Run ./run.sh --handoff without changing source files. Report where summary.md and review.md were created, whether their contents were confirmed, and whether both temporary OpenAI sessions and Blaxel cloud computers were deleted.
+
+If setup or access blocks the run, stop and report the exact missing requirement or access page.
 ```
 
 ## Run it yourself
 
-You need Python 3.11–3.14, Git, the [Blaxel CLI](https://docs.blaxel.ai/cli-reference/introduction) logged into your workspace, an OpenAI API key, and a Blaxel API key. This development checkout currently installs its pinned Agents API client from OpenAI's access-controlled source, so Git must already be able to read it.
+You need Python 3.11–3.14, Git, an OpenAI API key with Agents API access, and a Blaxel workspace and API key. `run.sh` creates the virtualenv and installs the Agents API client version pinned in [`pyproject.toml`](pyproject.toml).
 
 ```bash
 git clone https://github.com/blaxel-ai/openai-agents-api-cookbook.git
 cd openai-agents-api-cookbook
-
-bl version
-bl workspaces
 
 export OPENAI_API_KEY='<openai-project-key>'
 export BL_WORKSPACE='<blaxel-workspace>'
@@ -49,11 +43,23 @@ export BL_API_KEY='<blaxel-api-key>'
 ./run.sh
 ```
 
-The script keeps credentials in the process environment. It does not write them to `.env` or Git config. CLI login helps identify and authenticate the workspace, but `BL_WORKSPACE` and `BL_API_KEY` remain explicit runtime inputs.
+The baseline run:
 
-## What you get
+1. Starts one Blaxel cloud computer.
+2. Connects one OpenAI-hosted agent to it.
+3. Gives the agent a source file and asks for `summary.md`.
+4. Reads `summary.md` back and confirms it contains a marker from the source.
+5. Deletes the OpenAI session and cloud computer.
 
-With Agent Drive access:
+Run the optional Agent Drive handoff to show a fresh agent continuing from the saved file:
+
+```bash
+./run.sh --handoff
+```
+
+The handoff deletes the first session and computer before starting a fresh pair. The fresh agent reads the saved `summary.md`, creates `review.md`, confirms both files, and then deletes the second temporary pair.
+
+## What success looks like
 
 ```text
 Agent Drive: using openai-agents-api-context
@@ -61,56 +67,71 @@ started Blaxel sandbox ...
 created OpenAI session ...
 environment connected
 final status: idle
-verified agent artifact ...
-kept durable result on Agent Drive ...
+confirmed generated file .../summary.md
+kept durable result on Agent Drive openai-agents-api-context:/openai-agents-api-cookbook/runs/<id>/summary.md
+deleted OpenAI session
+deleted Blaxel sandbox
+
+started Blaxel sandbox ...
+confirmed saved source .../summary.md
+created handoff OpenAI session ...
+environment connected
+final handoff status: idle
+confirmed review file .../review.md
+kept handoff result on Agent Drive openai-agents-api-context:/openai-agents-api-cookbook/runs/<id>/review.md
 deleted OpenAI session
 deleted Blaxel sandbox
 ```
 
-The input and generated `summary.md` remain under a unique `runs/<id>/` folder on Agent Drive. A later sandbox or independent agent session can mount the same drive and reuse that context.
+The first agent must copy an exact marker from `sample_report.txt` into both its response and `summary.md`. The fresh agent must read that saved file and copy the original marker into `review.md` with a second marker. This proves the agents used the files instead of producing an ungrounded answer.
 
-Without Agent Drive access:
+Both computers and OpenAI sessions are temporary. When Agent Drive is enabled, only the files remain under one unique `runs/<id>/` folder.
 
-```text
-Agent Drive: Agent Drive is not enabled for workspace '...'
-Request access: https://app.blaxel.ai/.../global-agentic-network/drives
-Continuing with disposable sandbox context.
-```
+## If Agent Drive is not enabled
 
-The task still completes. The printed Console page shows the Agent Drive access request for the signed-in workspace.
+If the workspace does not have Agent Drive access, the default run still works with temporary sandbox storage and prints the exact Blaxel Console page where the signed-in workspace can request access.
 
-## Agent Drive policy
-
-`BL_AGENT_DRIVE_MODE` controls the fallback:
-
-| Value | Behavior |
+| Mode | What happens |
 | --- | --- |
 | `auto` | Use Agent Drive when available; otherwise show the access page and continue with temporary storage |
-| `required` | Stop with the access page if durable context is unavailable |
-| `off` | Run with temporary sandbox storage |
+| `required` | Stop with the access page when durable files are unavailable |
+| `off` | Always use temporary sandbox storage |
 
-`auto` is the default. Agent Drive private preview currently requires `us-was-1`; another `BL_REGION` falls back in `auto` mode and fails clearly in `required` mode.
+`auto` is the default. Set the mode before running:
 
-The reusable drive defaults to `openai-agents-api-context`. Set `BL_AGENT_DRIVE_NAME` to choose another lowercase resource name.
+```bash
+export BL_AGENT_DRIVE_MODE=off
+./run.sh
+```
 
-## The starter boundary
+Agent Drive currently uses `us-was-1`. A different `BL_REGION` explains the mismatch and falls back to temporary storage in `auto` mode without showing the access page.
 
-Keep:
+The fresh-session handoff requires Agent Drive, so `./run.sh --handoff` treats `auto` as required and refuses `BL_AGENT_DRIVE_MODE=off`. Authentication, mount, configuration, and other platform failures also stop instead of silently falling back.
 
-- OpenAI session and environment connection
-- Blaxel Sandbox and Codex executor lifecycle
-- Agent Drive entitlement handling, scoped mount, and durable run folders
-- event streaming, deterministic verification, diagnostics, and cleanup
+## Make it yours
 
-Replace:
+Start with the pieces that are specific to the demo:
 
-- `sample_report.txt`
-- the agent instructions and prompt in `main.py`
-- the artifact schema and verification rule
+| Change | Where |
+| --- | --- |
+| Input file | `sample_report.txt` |
+| Agent instructions and task | `main.py` |
+| Output file and confirmation rule | `main.py` |
+| Fresh-agent follow-up | `handoff.py` |
 
-Extend with another session, job, or agent that mounts the same drive when you need cross-agent handoffs. Agent Drive shares files and artifacts; it does not merge model memory or OpenAI conversation history.
+Keep the lifecycle and safety pieces:
 
-## Defaults
+- OpenAI session and self-hosted environment connection
+- Blaxel Sandbox creation and cleanup
+- Agent Drive access handling and scoped folders
+- event streaming, deterministic confirmation, and failure diagnostics
+
+Agent Drive shares files. It does not merge model memory or OpenAI conversation history.
+
+<details>
+<summary>Configuration and repository map</summary>
+
+### Defaults
 
 | Setting | Value |
 | --- | --- |
@@ -121,31 +142,34 @@ Extend with another session, job, or agent that mounts the same drive when you n
 | Codex executor | `0.146.0-alpha.3` |
 | Sandbox lifetime | 15 minutes |
 
-Override the model and region with `OPENAI_MODEL` and `BL_REGION`. Refresh the SDK, model, and executor pins together.
+Override the model and region with `OPENAI_MODEL` and `BL_REGION`. Set `BL_AGENT_DRIVE_NAME` to choose another reusable Drive.
 
-## Files
+### Files
 
 | Path | Purpose |
 | --- | --- |
-| `main.py` | readable end-to-end recipe and artifact verification |
-| `context_store.py` | Agent Drive access, scoped durable context, and fallback |
+| `main.py` | readable end-to-end recipe |
+| `handoff.py` | fresh agent and computer continue from the saved file |
+| `context_store.py` | Agent Drive access, scoped storage, and fallback |
 | `runtime.py` | Codex executor, event streaming, diagnostics, and cleanup |
 | `run.sh` | access preflight and one-command setup |
 | `sample_report.txt` | replaceable sample input |
-| `tests/` | lifecycle, access, fallback, verification, and cleanup contracts |
+| `tests/` | lifecycle, access, confirmation, and cleanup checks |
 | `AGENTS.md` | instructions for coding agents |
 | `CLAUDE.md` | Claude Code pointer to `AGENTS.md` |
+
+</details>
 
 ## Verify changes
 
 ```bash
 .venv/bin/python -m pytest
 .venv/bin/ruff check .
-.venv/bin/python -m compileall -q main.py context_store.py runtime.py tests
+.venv/bin/python -m compileall -q main.py handoff.py context_store.py runtime.py tests
 bash -n run.sh
 ```
 
-`./run.sh` is the live integration test. It creates hosted resources and invokes a model.
+`./run.sh` and `./run.sh --handoff` create hosted resources and invoke a model.
 
 ## Links
 

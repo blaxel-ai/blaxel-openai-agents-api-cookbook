@@ -12,7 +12,21 @@ fail() {
   exit 1
 }
 
-[[ $# -eq 0 ]] || fail "run this script without arguments: ./run.sh"
+case "${1:-}" in
+  "")
+    ENTRYPOINT="${ROOT_DIR}/main.py"
+    RUN_LABEL="running one OpenAI Agents API session on a Blaxel Sandbox"
+    ;;
+  "--handoff")
+    ENTRYPOINT="${ROOT_DIR}/handoff.py"
+    RUN_LABEL="running a fresh-session Agent Drive handoff"
+    ;;
+  *)
+    fail "usage: ./run.sh [--handoff]"
+    ;;
+esac
+[[ $# -le 1 ]] || fail "usage: ./run.sh [--handoff]"
+
 command -v "${PYTHON_BIN}" >/dev/null 2>&1 || fail "${PYTHON_BIN} is not installed"
 
 "${PYTHON_BIN}" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info < (3, 15) else 1)' \
@@ -29,7 +43,7 @@ if [[ -n "${GITHUB_TOKEN:-}" ]]; then
 fi
 
 if ! GIT_TERMINAL_PROMPT=0 git ls-remote "${SDK_REPOSITORY}" HEAD >/dev/null 2>&1; then
-  fail "Git cannot read the private OpenAI preview SDK; export GITHUB_TOKEN with read access"
+  fail "cannot read the Agents API client source pinned in pyproject.toml; if it needs authentication, export GITHUB_TOKEN with read access"
 fi
 
 if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
@@ -40,5 +54,5 @@ fi
 printf 'installing pinned cookbook dependencies\n'
 "${VENV_DIR}/bin/python" -m pip --disable-pip-version-check install -e "${ROOT_DIR}[dev]"
 
-printf 'running OpenAI Agents API on a Blaxel Sandbox\n'
-exec "${VENV_DIR}/bin/python" "${ROOT_DIR}/main.py"
+printf '%s\n' "${RUN_LABEL}"
+exec "${VENV_DIR}/bin/python" "${ENTRYPOINT}"

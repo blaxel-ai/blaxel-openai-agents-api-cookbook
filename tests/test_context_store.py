@@ -83,6 +83,10 @@ async def test_resolve_context_store_uses_agent_drive(
     assert store.drive_output_path == (
         "/openai-agents-api-cookbook/runs/run-123/summary.md"
     )
+    assert store.review_path == "/workspace/context/runs/run-123/review.md"
+    assert store.drive_review_path == (
+        "/openai-agents-api-cookbook/runs/run-123/review.md"
+    )
     assert created_with["name"] == context_store.DEFAULT_DRIVE_NAME
 
 

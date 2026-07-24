@@ -2,7 +2,7 @@
 
 ## Goal
 
-Keep this a minimal, reproducible example of the OpenAI Agents API using a self-hosted Codex executor and Agent Drive in a Blaxel Sandbox.
+Keep this a minimal, reproducible starter for giving an OpenAI-hosted agent an isolated Blaxel computer, then optionally carrying its useful files into a fresh session with Agent Drive.
 
 The baseline is:
 
@@ -33,7 +33,15 @@ Blaxel Sandbox
         └── Agent Drive when enabled
 ```
 
-One run creates one OpenAI session and one Blaxel Sandbox. It reads one input, writes and verifies one artifact, and deletes both temporary resources. Agent Drive is reused and retained so the artifact survives; users without Agent Drive access get the same task on disposable sandbox storage plus the exact Console access page.
+One baseline run creates one OpenAI session and one Blaxel Sandbox. The agent reads one input, creates and confirms one output file, and then both temporary resources are deleted. Agent Drive is reused and retained so the file survives; users without Agent Drive access get the same task on temporary sandbox storage plus the exact Console access page.
+
+The optional handoff is:
+
+```bash
+./run.sh --handoff
+```
+
+It requires Agent Drive. After the baseline resources are deleted, a fresh OpenAI session and fresh Blaxel Sandbox mount the same scoped Drive, read `summary.md`, create and confirm `review.md`, and delete the second resource pair.
 
 Required environment:
 
@@ -43,7 +51,7 @@ Required environment:
 - existing Git access to the Agents API SDK source pinned in `pyproject.toml`
 - `GITHUB_TOKEN` only when the Git credential helper cannot read that source
 - `BL_REGION` and `OPENAI_MODEL` are optional overrides
-- `BL_AGENT_DRIVE_MODE=auto|required|off` controls the durable-context policy
+- `BL_AGENT_DRIVE_MODE=auto|required|off` controls the baseline policy; `--handoff` requires Agent Drive and refuses `off`
 - `BL_AGENT_DRIVE_NAME` optionally selects the reusable drive
 
 Check presence without printing values. Never persist credentials.
@@ -57,11 +65,19 @@ A live run passes only when every item is true:
 - Agent Drive created or reused and mounted when access is enabled
 - exact access-request URL shown when the Drive entitlement is unavailable
 - self-hosted environment connected
-- exact marker returned from the input and written to the artifact
+- exact marker returned from the input and written to the output file
 - final status is `idle`
 - OpenAI session explicitly deleted
 - Blaxel Sandbox explicitly deleted
-- Agent Drive retained intentionally when used
+- Agent Drive retained intentionally when used so the selected files survive
+
+The handoff also requires:
+
+- first session and Sandbox deleted before the second pair is created
+- persisted `summary.md` read from a fresh Sandbox
+- a fresh OpenAI environment ID connected to that Sandbox
+- original and handoff markers confirmed in `review.md`
+- second OpenAI session and Sandbox explicitly deleted
 
 The generated prose is non-deterministic. The marker is not. `idle` without the marker is failure.
 
@@ -69,10 +85,13 @@ The generated prose is non-deterministic. The marker is not. `idle` without the 
 
 - Do not run the live path without authorization to create resources and invoke a model
 - Keep one session, one sandbox, and one file task in the baseline
-- Prefer Agent Drive in `auto` mode; fallback only for the exact entitlement error or an unsupported preview region
+- Prefer Agent Drive in `auto` mode; fallback only for the exact entitlement error or an unsupported region
 - Never turn auth, mount, or platform failures into a silent ephemeral fallback
 - Keep Agent Drive permissions scoped by workload label and drive path
-- Keep multi-session, webhooks, and broader orchestration out of this recipe
+- Keep the baseline to one session and one Sandbox
+- Keep the optional handoff to two sequential, isolated session and Sandbox pairs
+- Stop before creating handoff resources when `BL_AGENT_DRIVE_MODE=off`
+- Keep webhooks, concurrent sessions, and broader orchestration out of this recipe
 - Do not open an inbound sandbox port for this example
 - Preserve explicit model, SDK, executor, image, region, and lifetime pins
 - Inspect the pinned Agents API client source before changing a pin
@@ -86,7 +105,7 @@ The generated prose is non-deterministic. The marker is not. `idle` without the 
 ```bash
 .venv/bin/python -m pytest
 .venv/bin/ruff check .
-.venv/bin/python -m compileall -q main.py context_store.py runtime.py tests
+.venv/bin/python -m compileall -q main.py handoff.py context_store.py runtime.py tests
 bash -n run.sh
 ```
 

@@ -51,6 +51,16 @@ class ContextStore:
             return None
         return f"{DRIVE_ROOT}/runs/{self.run_id}/summary.md"
 
+    @property
+    def review_path(self) -> str:
+        return f"{self.run_path}/review.md"
+
+    @property
+    def drive_review_path(self) -> str | None:
+        if self.mode != "agent-drive":
+            return None
+        return f"{DRIVE_ROOT}/runs/{self.run_id}/review.md"
+
 
 class AgentDriveRequiredError(RuntimeError):
     """Raised when durable context was required but cannot be used."""
@@ -128,10 +138,7 @@ async def resolve_context_store(
         )
 
     if region != AGENT_DRIVE_REGION:
-        reason = (
-            f"Agent Drive private preview requires {AGENT_DRIVE_REGION}; "
-            f"BL_REGION is {region}"
-        )
+        reason = f"Agent Drive requires {AGENT_DRIVE_REGION}; BL_REGION is {region}"
         if resolved_mode == "required":
             raise AgentDriveRequiredError(f"{reason}. Use {AGENT_DRIVE_REGION}.")
         return ContextStore(
