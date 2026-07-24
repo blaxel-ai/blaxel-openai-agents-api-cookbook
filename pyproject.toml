@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "blaxel-openai-agents-api-cookbook"
 version = "0.1.0"
-description = "Run the OpenAI Agents API self-hosted executor in a Blaxel Sandbox"
+description = "Give OpenAI-hosted agents an isolated Blaxel computer with optional file handoff"
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
 dependencies = [
@@ -21,7 +21,7 @@ dev = [
 ]
 
 [tool.setuptools]
-py-modules = ["context_store", "main", "runtime"]
+py-modules = ["context_store", "handoff", "main", "runtime"]
 
 [tool.pytest.ini_options]
 addopts = "-q"

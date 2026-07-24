@@ -13,6 +13,7 @@ from agent_api_sdk import AgentAPISDK, AsyncAgentSession
 from blaxel.core import SandboxInstance
 
 from context_store import (
+    AgentDriveMode,
     AgentDriveRequiredError,
     ContextStore,
     mount_context_store,
@@ -33,7 +34,10 @@ DEFAULT_REGION = "us-was-1"
 EXAMPLE_DIR = Path(__file__).resolve().parent
 
 
-async def main() -> int:
+async def run_report(
+    *,
+    drive_mode: AgentDriveMode | None = None,
+) -> tuple[int, ContextStore]:
     api_key = required_env("OPENAI_API_KEY")
     workspace = required_env("BL_WORKSPACE")
     required_env("BL_API_KEY")
@@ -41,7 +45,11 @@ async def main() -> int:
     region = os.environ.get("BL_REGION", DEFAULT_REGION)
     session: AsyncAgentSession | None = None
     sandbox: SandboxInstance | None = None
-    store = await resolve_context_store(workspace=workspace, region=region)
+    store = await resolve_context_store(
+        workspace=workspace,
+        region=region,
+        mode=drive_mode,
+    )
     print_context_store(store)
 
     async with AgentAPISDK(api_key=api_key) as client:
@@ -56,8 +64,8 @@ async def main() -> int:
                     "model": model,
                     "instructions": (
                         "Work only inside /workspace/context. Read the requested source file "
-                        "directly, write the requested Markdown artifact, and include the exact "
-                        "verification marker in both the artifact and your response. If file "
+                        "directly, write the requested Markdown file, and include the exact "
+                        "verification marker in both the file and your response. If file "
                         "access is unavailable, say so instead of guessing."
                     ),
                 },
@@ -89,21 +97,26 @@ async def main() -> int:
 
             # session.stream() returns only after the session.idle or session.failed
             # event. Use that event-derived status instead of an immediate GET, which
-            # can briefly return the previous in_progress state in this preview.
+            # can briefly return the previous in_progress state.
             print(f"\nfinal status: {session.status}")
             if session.status != "idle":
-                return 2
-            artifact = await sandbox.fs.read(store.output_path)
-            verify_result(agent_output, artifact, store)
-            print(f"verified agent artifact {store.output_path}")
+                return 2, store
+            summary = await sandbox.fs.read(store.output_path)
+            verify_result(agent_output, summary, store)
+            print(f"confirmed generated file {store.output_path}")
             if store.drive_output_path is not None:
                 print(
                     f"kept durable result on Agent Drive {store.drive.name}:"
                     f"{store.drive_output_path}"
                 )
-            return 0
+            return 0, store
         finally:
             await cleanup(session, sandbox)
+
+
+async def main() -> int:
+    status, _store = await run_report()
+    return status
 
 
 def required_env(name: str) -> str:
@@ -113,8 +126,12 @@ def required_env(name: str) -> str:
     return value
 
 
-async def create_sandbox(region: str) -> SandboxInstance:
-    name = f"openai-agents-api-{uuid.uuid4().hex[:8]}"
+async def create_sandbox(
+    region: str,
+    *,
+    prefix: str = "openai-agents-api",
+) -> SandboxInstance:
+    name = f"{prefix}-{uuid.uuid4().hex[:8]}"
     sandbox = await SandboxInstance.create(
         {
             "name": name,
@@ -150,14 +167,14 @@ async def prepare_context(sandbox: SandboxInstance, store: ContextStore) -> None
     )
 
 
-def verify_result(agent_output: str, artifact: str, store: ContextStore) -> None:
+def verify_result(agent_output: str, summary: str, store: ContextStore) -> None:
     if VERIFICATION_MARKER not in agent_output:
         raise RuntimeError(
             f"agent response did not include the verification marker from {store.input_path}"
         )
-    if VERIFICATION_MARKER not in artifact:
+    if VERIFICATION_MARKER not in summary:
         raise RuntimeError(
-            f"agent artifact {store.output_path} did not include the verification marker"
+            f"generated file {store.output_path} did not include the verification marker"
         )
 
 
