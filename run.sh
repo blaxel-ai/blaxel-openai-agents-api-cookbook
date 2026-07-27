@@ -52,7 +52,9 @@ if [[ -n "${AGENTS_API_SDK_MIRROR:-}" ]]; then
     MIRROR_URL="${MIRROR_URL/https:\/\/github.com\//https://x-access-token:${GITHUB_TOKEN}@github.com/}"
   fi
   add_git_config "url.${MIRROR_URL}.insteadOf" "${SDK_REPOSITORY}"
-  printf 'installing the Agents API client from %s\n' "${AGENTS_API_SDK_MIRROR}"
+  # Never log the raw value: the URL may carry embedded credentials.
+  MIRROR_LABEL="$(printf '%s' "${AGENTS_API_SDK_MIRROR}" | sed -E 's#://[^/@]*@#://***@#')"
+  printf 'installing the Agents API client from %s\n' "${MIRROR_LABEL}"
 fi
 
 if [[ -n "${GITHUB_TOKEN:-}" ]]; then
@@ -66,7 +68,7 @@ fi
 PINNED_SDK_SHA="$(sed -n 's/.*agents-api-python-preview\.git@\([0-9a-f]\{40\}\).*/\1/p' "${ROOT_DIR}/pyproject.toml")"
 if [[ -n "${AGENTS_API_SDK_MIRROR:-}" && -n "${PINNED_SDK_SHA}" ]] \
   && ! GIT_TERMINAL_PROMPT=0 git ls-remote "${SDK_REPOSITORY}" | grep -q "^${PINNED_SDK_SHA}"; then
-  printf 'warning: %s exposes no ref at the pinned commit %s\n' "${AGENTS_API_SDK_MIRROR}" "${PINNED_SDK_SHA}" >&2
+  printf 'warning: %s exposes no ref at the pinned commit %s\n' "${MIRROR_LABEL}" "${PINNED_SDK_SHA}" >&2
 fi
 
 if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
