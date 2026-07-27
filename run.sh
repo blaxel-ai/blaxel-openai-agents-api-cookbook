@@ -36,14 +36,37 @@ command -v "${PYTHON_BIN}" >/dev/null 2>&1 || fail "${PYTHON_BIN} is not install
 [[ -n "${BL_WORKSPACE:-}" ]] || fail "BL_WORKSPACE is required"
 [[ -n "${BL_API_KEY:-}" ]] || fail "BL_API_KEY is required"
 
+GIT_CONFIG_ENTRIES=0
+add_git_config() {
+  export "GIT_CONFIG_KEY_${GIT_CONFIG_ENTRIES}=$1"
+  export "GIT_CONFIG_VALUE_${GIT_CONFIG_ENTRIES}=$2"
+  GIT_CONFIG_ENTRIES=$((GIT_CONFIG_ENTRIES + 1))
+  export GIT_CONFIG_COUNT="${GIT_CONFIG_ENTRIES}"
+}
+
+# Optional: install the pinned client from a repository you can read instead of the
+# upstream early-access repository. pyproject.toml keeps the upstream pin either way.
+if [[ -n "${AGENTS_API_SDK_MIRROR:-}" ]]; then
+  MIRROR_URL="${AGENTS_API_SDK_MIRROR}"
+  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    MIRROR_URL="${MIRROR_URL/https:\/\/github.com\//https://x-access-token:${GITHUB_TOKEN}@github.com/}"
+  fi
+  add_git_config "url.${MIRROR_URL}.insteadOf" "${SDK_REPOSITORY}"
+  printf 'installing the Agents API client from %s\n' "${AGENTS_API_SDK_MIRROR}"
+fi
+
 if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-  export GIT_CONFIG_COUNT=1
-  export GIT_CONFIG_KEY_0="url.https://x-access-token:${GITHUB_TOKEN}@github.com/.insteadOf"
-  export GIT_CONFIG_VALUE_0="https://github.com/"
+  add_git_config "url.https://x-access-token:${GITHUB_TOKEN}@github.com/.insteadOf" "https://github.com/"
 fi
 
 if ! GIT_TERMINAL_PROMPT=0 git ls-remote "${SDK_REPOSITORY}" HEAD >/dev/null 2>&1; then
-  fail "cannot read the Agents API client source pinned in pyproject.toml; if it needs authentication, export GITHUB_TOKEN with read access"
+  fail "cannot read the Agents API client source pinned in pyproject.toml; export GITHUB_TOKEN with read access to it, or export AGENTS_API_SDK_MIRROR with a repository you can read"
+fi
+
+PINNED_SDK_SHA="$(sed -n 's/.*agents-api-python-preview\.git@\([0-9a-f]\{40\}\).*/\1/p' "${ROOT_DIR}/pyproject.toml")"
+if [[ -n "${AGENTS_API_SDK_MIRROR:-}" && -n "${PINNED_SDK_SHA}" ]] \
+  && ! GIT_TERMINAL_PROMPT=0 git ls-remote "${SDK_REPOSITORY}" | grep -q "^${PINNED_SDK_SHA}"; then
+  printf 'warning: %s exposes no ref at the pinned commit %s\n' "${AGENTS_API_SDK_MIRROR}" "${PINNED_SDK_SHA}" >&2
 fi
 
 if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
