@@ -169,7 +169,8 @@ Blaxel injects workspace credentials, so return a placeholder from the wrapper f
 the BL_API_KEY requirement instead of demanding the variable; set
 os.environ["BL_REGION"] = "us-was-1" in the wrapper before importing the cookbook
 modules, because the platform injects the job's own region and Agent Drive requires
-us-was-1; and depend on blaxel==0.4.0, which caps mcp below 2. Deploy with "bl deploy",
+us-was-1; and depend on blaxel==0.4.1, which caps mcp below 2 and reports task
+failures correctly. Deploy with "bl deploy",
 start one execution with a single empty task, confirm the job logs print "kept
 durable result on Agent Drive", then remove the job with "bl delete job".
 ```
@@ -184,7 +185,7 @@ durable result on Agent Drive", then remove the job with "bl delete job".
 | Model | `gpt-5.6` |
 | Region | `us-was-1` |
 | OpenAI Agents API SDK | `0.1.1` |
-| Blaxel Python SDK | `0.4.0` |
+| Blaxel Python SDK | `0.4.1` |
 | Codex executor | `0.146.0-alpha.3` |
 | Sandbox lifetime | 15 minutes |
 
