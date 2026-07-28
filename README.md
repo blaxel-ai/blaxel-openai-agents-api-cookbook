@@ -19,7 +19,7 @@ flowchart LR
 Copy this into a coding agent with terminal access:
 
 ```text
-Clone https://github.com/blaxel-ai/openai-agents-api-cookbook.git and read AGENTS.md.
+Clone https://github.com/blaxel-ai/blaxel-openai-agents-api-cookbook.git and read AGENTS.md.
 
 Without printing or saving secrets, confirm that OPENAI_API_KEY, BL_WORKSPACE, and BL_API_KEY are available and that the pinned Agents API client can be installed.
 
@@ -33,8 +33,8 @@ If setup or access blocks the run, stop and report the exact missing requirement
 You need Python 3.11–3.14, Git, an OpenAI API key with Agents API access, and a Blaxel workspace and API key. `run.sh` creates the virtualenv and installs the Agents API client version pinned in [`pyproject.toml`](pyproject.toml).
 
 ```bash
-git clone https://github.com/blaxel-ai/openai-agents-api-cookbook.git
-cd openai-agents-api-cookbook
+git clone https://github.com/blaxel-ai/blaxel-openai-agents-api-cookbook.git
+cd blaxel-openai-agents-api-cookbook
 
 export OPENAI_API_KEY='<openai-project-key>'
 export BL_WORKSPACE='<blaxel-workspace>'
