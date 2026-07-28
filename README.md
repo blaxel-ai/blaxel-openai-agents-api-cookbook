@@ -169,7 +169,7 @@ Blaxel injects workspace credentials, so return a placeholder from the wrapper f
 the BL_API_KEY requirement instead of demanding the variable; set
 os.environ["BL_REGION"] = "us-was-1" in the wrapper before importing the cookbook
 modules, because the platform injects the job's own region and Agent Drive requires
-us-was-1; and pin mcp>=1.16,<2 alongside blaxel==0.3.2. Deploy with "bl deploy",
+us-was-1; and depend on blaxel==0.4.0, which caps mcp below 2. Deploy with "bl deploy",
 start one execution with a single empty task, confirm the job logs print "kept
 durable result on Agent Drive", then remove the job with "bl delete job".
 ```
