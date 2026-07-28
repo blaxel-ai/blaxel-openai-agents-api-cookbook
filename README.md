@@ -184,7 +184,7 @@ durable result on Agent Drive", then remove the job with "bl delete job".
 | Model | `gpt-5.6` |
 | Region | `us-was-1` |
 | OpenAI Agents API SDK | `0.1.1` |
-| Blaxel Python SDK | `0.3.2` |
+| Blaxel Python SDK | `0.4.0` |
 | Codex executor | `0.146.0-alpha.3` |
 | Sandbox lifetime | 15 minutes |
 

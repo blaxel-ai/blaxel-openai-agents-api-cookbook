@@ -151,7 +151,9 @@ async def prepare_context(sandbox: SandboxInstance, store: ContextStore) -> None
         {
             "name": "prepare-context",
             "command": f"mkdir -p {shlex.quote(store.run_path)}",
-            "working_dir": WORKSPACE,
+            # Fresh sandboxes do not ship /workspace; the Agent Drive mount creates
+            # it as a side effect, but the disposable fallback must not rely on that.
+            "working_dir": "/",
             "wait_for_completion": True,
             "timeout": 30,
         }
