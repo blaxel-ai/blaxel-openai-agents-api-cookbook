@@ -128,6 +128,52 @@ Keep the lifecycle and safety pieces:
 
 Agent Drive shares files. It does not merge model memory or OpenAI conversation history.
 
+## What's next
+
+Each idea below is a prompt for a coding agent that has this repository cloned and the same environment variables set. All three were run end to end from this repository before being written down.
+
+### 1. Swap in your own document (2 minutes)
+
+```text
+Replace the contents of sample_report.txt with a document of mine, keeping the exact
+"Verification marker:" line from the original file. Run ./run.sh and confirm the run
+prints "confirmed generated file" and that the kept summary.md reflects my document
+instead of the original sample.
+```
+
+### 2. Analyze data and open the result in your browser
+
+The repository ships [`sample_data.csv`](sample_data.csv) (14 days of session counts) so this works out of the box. Point it at your own CSV afterwards.
+
+```text
+Create analyze.py, a copy of main.py where the agent reads sample_data.csv instead of
+sample_report.txt, computes total sessions, total errors, and the busiest date (keep
+date strings exactly as they appear in the CSV), and writes report.html: a fully
+self-contained HTML page with those numbers, an inline SVG bar chart of sessions per
+date, and the verification marker in an HTML comment. After confirming the marker and
+the totals in the file, serve the run directory from inside the sandbox on port 4321
+(bind to the HOST environment variable; the sandbox image already occupies port 8080
+and has no curl), create a public Blaxel preview URL for that port, print the URL,
+and keep the sandbox alive until I confirm I opened it.
+```
+
+### 3. Run it as a hosted Blaxel job, with no laptop in the loop
+
+```text
+Deploy this orchestration as a Blaxel job. Scaffold with "bl new job" (Python), copy
+main.py, context_store.py, runtime.py, and sample_report.txt into src/, vendor the
+agent_api_sdk package directory into src/ (the pinned client is not on PyPI), and add
+a wrapper entrypoint that calls run_report() through bl_start_job. Three hosted
+specifics: the only secret the job needs in its .env is OPENAI_API_KEY, because
+Blaxel injects workspace credentials, so return a placeholder from the wrapper for
+the BL_API_KEY requirement instead of demanding the variable; set
+os.environ["BL_REGION"] = "us-was-1" in the wrapper before importing the cookbook
+modules, because the platform injects the job's own region and Agent Drive requires
+us-was-1; and pin mcp>=1.16,<2 alongside blaxel==0.3.2. Deploy with "bl deploy",
+start one execution with a single empty task, confirm the job logs print "kept
+durable result on Agent Drive", then remove the job with "bl delete job".
+```
+
 <details>
 <summary>Configuration and repository map</summary>
 
