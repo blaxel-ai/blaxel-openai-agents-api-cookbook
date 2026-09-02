@@ -9,8 +9,8 @@ description = "Give OpenAI-hosted agents an isolated Blaxel computer with option
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
 dependencies = [
-  "agent-api-sdk @ git+https://github.com/OpenAI-Early-Access/agents-api-python-preview.git@cced8d0e7b300ee41ad7987573590d0196a63d41",
-  "blaxel==0.4.1",
+  "agent-api-sdk @ git+https://github.com/OpenAI-Early-Access/agents-api-python-preview.git@main",
+  "blaxel>=0.4.7,<0.5",
 ]
 
 [project.optional-dependencies]

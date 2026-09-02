@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from agent_api_sdk import SelfHostedEnvironmentInfo, SessionFailedEvent, SessionTurnFailedEvent
 from blaxel.core.client.errors import UnexpectedStatus
 
 import handoff
@@ -17,9 +18,9 @@ import runtime
 from context_store import ContextStore
 
 
-def test_versions_are_explicit() -> None:
-    assert main.DEFAULT_MODEL == "gpt-5.6"
-    assert runtime.CODEX_VERSION == "0.146.0-alpha.3"
+def test_defaults_follow_openai_examples() -> None:
+    assert main.DEFAULT_MODEL == "gpt-5.6-sol"
+    assert runtime.CODEX_VERSION == "alpha"
 
 
 def test_exec_server_command_targets_agents_api() -> None:
@@ -36,7 +37,78 @@ def test_exec_server_command_targets_agents_api() -> None:
 def test_required_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     with pytest.raises(RuntimeError, match="OPENAI_API_KEY is required"):
-        main.required_env("OPENAI_API_KEY")
+        runtime.required_env("OPENAI_API_KEY")
+
+
+def test_executor_key_is_used_when_set(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "project-key")
+    monkeypatch.setenv("OPENAI_EXECUTOR_API_KEY", "executor-key")
+
+    assert runtime.resolve_openai_keys() == ("project-key", "executor-key")
+    assert capsys.readouterr().err == ""
+
+
+def test_missing_executor_key_falls_back_loudly(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "project-key")
+    monkeypatch.delenv("OPENAI_EXECUTOR_API_KEY", raising=False)
+    monkeypatch.setattr(runtime, "_fallback_warned", [])
+
+    assert runtime.resolve_openai_keys() == ("project-key", "project-key")
+    assert runtime.resolve_openai_keys() == ("project-key", "project-key")
+    assert capsys.readouterr().err.count("OPENAI_EXECUTOR_API_KEY is not set") == 1
+
+
+def test_blaxel_workspace_prefers_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BL_WORKSPACE", "from-env")
+    monkeypatch.setattr(runtime, "blaxel_credentials_missing", lambda: False)
+
+    assert runtime.resolve_blaxel_workspace() == "from-env"
+
+
+def test_blaxel_workspace_requires_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("BL_WORKSPACE", raising=False)
+    monkeypatch.setattr(runtime, "blaxel_login_workspace", lambda: "from-login")
+    monkeypatch.setattr(runtime, "blaxel_credentials_missing", lambda: True)
+
+    with pytest.raises(RuntimeError, match="run `bl login`"):
+        runtime.resolve_blaxel_workspace()
+
+
+@pytest.mark.asyncio
+async def test_start_exec_server_only_passes_executor_key() -> None:
+    calls: list[dict[str, Any]] = []
+
+    class Process:
+        async def exec(self, request: dict[str, Any]) -> None:
+            calls.append(request)
+
+    sandbox = SimpleNamespace(process=Process())
+    await runtime.start_exec_server(sandbox, "executor-key", "env_test")  # type: ignore[arg-type]
+
+    assert calls[0]["env"] == {"CODEX_API_KEY": "executor-key"}
+    assert calls[0]["keep_alive"] is True
+    assert "env_test" in calls[0]["command"]
+
+
+def test_environment_id_of_requires_self_hosted() -> None:
+    hosted = SimpleNamespace(info=SimpleNamespace(environment=self_hosted_environment()))
+    assert runtime.environment_id_of(hosted) == "environment-test"  # type: ignore[arg-type]
+
+    other = SimpleNamespace(info=SimpleNamespace(environment=SimpleNamespace(type="cloud")))
+    with pytest.raises(RuntimeError, match="expected self-hosted environment"):
+        runtime.environment_id_of(other)  # type: ignore[arg-type]
+
+
+def self_hosted_environment() -> SelfHostedEnvironmentInfo:
+    return SelfHostedEnvironmentInfo(
+        type="self_hosted",
+        environment_id="environment-test",
+        workspace_directory="/workspace",
+    )
 
 
 def test_sample_report_contains_verification_marker() -> None:
@@ -176,12 +248,7 @@ async def test_run_review_cleans_up_both_resources_after_agent_failure(
 
     class FakeSession:
         id = "session-test"
-        info = SimpleNamespace(
-            environment=SimpleNamespace(
-                type="self_hosted",
-                environment_id="environment-test",
-            )
-        )
+        info = SimpleNamespace(environment=self_hosted_environment())
 
         async def delete(self) -> None:
             events.append("session-deleted")
@@ -353,6 +420,73 @@ async def test_stream_agent_output_returns_text_deltas() -> None:
     assert output == f"Verification marker: {main.VERIFICATION_MARKER}"
 
 
+@pytest.mark.asyncio
+async def test_stream_agent_output_reports_failed_turn_with_executor_logs() -> None:
+    class FailingSession:
+        async def stream(self, *, input: str) -> Any:
+            del input
+            yield SessionTurnFailedEvent.model_validate(
+                {
+                    "event_id": "evt_1",
+                    "session_id": "sess_1",
+                    "turn_id": "turn_1",
+                    "type": "session.turn.failed",
+                    "data": {},
+                    "error": {"code": "connection_failed", "message": "executor disconnected"},
+                }
+            )
+
+    class Process:
+        async def get(self, name: str) -> Any:
+            assert name == runtime.EXECUTOR_NAME
+            return SimpleNamespace(status="failed", stderr="codex: exited", stdout="", logs="")
+
+    with pytest.raises(RuntimeError, match="turn failed: executor disconnected") as failure:
+        await runtime.stream_agent_output(  # type: ignore[arg-type]
+            FailingSession(), SimpleNamespace(process=Process()), "read the report"
+        )
+    assert "codex: exited" in str(failure.value)
+
+
+@pytest.mark.asyncio
+async def test_stream_agent_output_reports_failed_session_with_executor_logs() -> None:
+    class FailingSession:
+        async def stream(self, *, input: str) -> Any:
+            del input
+            yield SessionFailedEvent.model_validate(
+                {
+                    "event_id": "evt_1",
+                    "session_id": "sess_1",
+                    "type": "session.failed",
+                    "session": {
+                        "id": "sess_1",
+                        "object": "agent.session",
+                        "created_at": 1,
+                        "last_active_at": 1,
+                        "status": "failed",
+                        "error": "executor never connected",
+                        "agent": {},
+                        "environment": {
+                            "type": "self_hosted",
+                            "environment_id": "env_1",
+                            "workspace_directory": "/workspace",
+                        },
+                    },
+                }
+            )
+
+    class Process:
+        async def get(self, name: str) -> Any:
+            assert name == runtime.EXECUTOR_NAME
+            return SimpleNamespace(status="failed", stderr="", stdout="codex: boot", logs="")
+
+    with pytest.raises(RuntimeError, match="session failed: executor never connected") as failure:
+        await runtime.stream_agent_output(  # type: ignore[arg-type]
+            FailingSession(), SimpleNamespace(process=Process()), "read the report"
+        )
+    assert "codex: boot" in str(failure.value)
+
+
 @dataclass
 class Deletable:
     deleted: bool = False
@@ -391,30 +525,62 @@ async def test_cleanup_attempts_both_deletions_before_failing() -> None:
     assert sandbox.deleted
 
 
-def test_run_script_fails_fast_when_sdk_source_is_unreadable(tmp_path: Path) -> None:
-    git_stub = tmp_path / "git"
-    git_stub.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
-    git_stub.chmod(0o755)
-    environment = {
-        "PATH": f"{tmp_path}:{os.environ['PATH']}",
-        "PYTHON_BIN": sys.executable,
-        "OPENAI_API_KEY": "test-only",
-        "BL_WORKSPACE": "test-only",
-        "BL_API_KEY": "test-only",
-    }
+def run_script(environment: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", "run.sh"],
+        cwd=Path(__file__).parents[1],
+        env={"PATH": os.environ["PATH"], "PYTHON_BIN": sys.executable, **environment},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
+
+def test_run_script_rejects_reused_project_key_as_executor_key(tmp_path: Path) -> None:
+    result = run_script(
+        {
+            "HOME": str(tmp_path),
+            "OPENAI_API_KEY": "same-key",
+            "OPENAI_EXECUTOR_API_KEY": "same-key",
+            "BL_API_KEY": "test-only",
+            "BL_WORKSPACE": "test-only",
+        }
+    )
+
+    assert result.returncode == 1
+    assert "must be a separate restricted key" in result.stderr
+    assert "installing" not in result.stdout
+
+
+def test_run_script_requires_valid_blaxel_login_or_api_key(tmp_path: Path) -> None:
+    expired_bl = tmp_path / "bl"
+    expired_bl.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    expired_bl.chmod(0o755)
     result = subprocess.run(
         ["bash", "run.sh"],
         cwd=Path(__file__).parents[1],
-        env=environment,
+        env={
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "PYTHON_BIN": sys.executable,
+            "HOME": str(tmp_path),
+            "OPENAI_API_KEY": "test-only",
+        },
         capture_output=True,
         text=True,
         check=False,
     )
 
     assert result.returncode == 1
-    assert "cannot read the Agents API client source pinned in pyproject.toml" in result.stderr
-    assert "installing pinned cookbook dependencies" not in result.stdout
+    assert "Blaxel login is missing or expired" in result.stderr
+
+
+def test_run_script_requires_workspace_with_api_key(tmp_path: Path) -> None:
+    result = run_script(
+        {"HOME": str(tmp_path), "OPENAI_API_KEY": "test-only", "BL_API_KEY": "test-only"}
+    )
+
+    assert result.returncode == 1
+    assert "BL_WORKSPACE is required alongside BL_API_KEY" in result.stderr
 
 
 def test_run_script_rejects_unknown_mode() -> None:
