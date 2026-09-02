@@ -35,8 +35,11 @@ command -v "${PYTHON_BIN}" >/dev/null 2>&1 || fail "${PYTHON_BIN} is not install
 if [[ -n "${OPENAI_EXECUTOR_API_KEY:-}" && "${OPENAI_EXECUTOR_API_KEY}" == "${OPENAI_API_KEY}" ]]; then
   fail "OPENAI_EXECUTOR_API_KEY must be a separate restricted key, not a copy of OPENAI_API_KEY"
 fi
-if [[ -z "${BL_API_KEY:-}" && ! -f "${HOME}/.blaxel/config.yaml" ]]; then
-  fail "Blaxel credentials are required: run 'bl login', or export BL_WORKSPACE and BL_API_KEY"
+if [[ -n "${BL_API_KEY:-}" ]]; then
+  [[ -n "${BL_WORKSPACE:-}" ]] || fail "BL_WORKSPACE is required alongside BL_API_KEY"
+else
+  command -v bl >/dev/null 2>&1 && bl token >/dev/null 2>&1 \
+    || fail "Blaxel login is missing or expired: run 'bl login', or export BL_WORKSPACE and BL_API_KEY"
 fi
 
 if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
@@ -44,7 +47,7 @@ if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
   "${PYTHON_BIN}" -m venv "${VENV_DIR}"
 fi
 
-printf 'installing pinned cookbook dependencies\n'
+printf 'installing cookbook dependencies\n'
 "${VENV_DIR}/bin/python" -m pip --disable-pip-version-check --quiet install -e "${ROOT_DIR}" \
   || fail "dependency installation failed; the Agents API client pinned in pyproject.toml must be reachable from this machine"
 

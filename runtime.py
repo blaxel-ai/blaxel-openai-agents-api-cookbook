@@ -161,7 +161,7 @@ async def stream_agent_output(
             error = event.error.message if event.error is not None else "unknown error"
             await raise_with_executor_diagnostics(sandbox, f"turn failed: {error}")
         if isinstance(event, SessionTurnCancelledEvent):
-            raise RuntimeError("turn was cancelled")
+            await raise_with_executor_diagnostics(sandbox, "turn was cancelled")
         if isinstance(event, SessionFailedEvent):
             await raise_with_executor_diagnostics(
                 sandbox,

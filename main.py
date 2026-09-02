@@ -52,6 +52,7 @@ async def run_report(
         region=region,
         mode=drive_mode,
     )
+    print(f"Blaxel workspace: {workspace} ({region})")
     print_context_store(store)
 
     async with AgentAPISDK(api_key=api_key) as client:

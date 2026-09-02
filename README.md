@@ -45,9 +45,9 @@ bl login                                                  # or export BL_WORKSPA
 
 ### Keys
 
-Two OpenAI keys keep the project key out of the agent's computer. `OPENAI_API_KEY` stays on your machine and creates sessions. `OPENAI_EXECUTOR_API_KEY` is the only key that enters the Blaxel Sandbox, where the Codex executor uses it to register with the session. Create it at [platform.openai.com/api-keys](https://platform.openai.com/api-keys) as a restricted key in the same project and owner as `OPENAI_API_KEY`, with **Models: Read** and every other permission set to None. Without it, the cookbook warns and uses the project key inside the Sandbox.
+Two OpenAI keys keep the project key out of the agent's computer. `OPENAI_API_KEY` stays on your machine and creates sessions. `OPENAI_EXECUTOR_API_KEY` is the only key that enters the Blaxel Sandbox, where the Codex executor uses it to register with the session. Create it at [platform.openai.com/api-keys](https://platform.openai.com/api-keys) as a restricted key in the same project and owner as `OPENAI_API_KEY`, with **List models: Read** and every other permission set to None. Without it, the cookbook warns and uses the project key inside the Sandbox.
 
-Blaxel credentials come from `bl login` ([install the CLI](https://docs.blaxel.ai/cli-reference/introduction)) or from `BL_WORKSPACE` and `BL_API_KEY` ([API keys](https://docs.blaxel.ai/Security/Access-tokens#api-keys)). In a hosted Blaxel job they are injected automatically.
+Blaxel credentials come from `bl login` ([install the CLI](https://docs.blaxel.ai/cli-reference/introduction); `run.sh` checks the login is still valid and uses the CLI's current workspace, printed on the first line of output) or from `BL_WORKSPACE` and `BL_API_KEY` ([API keys](https://docs.blaxel.ai/Security/Access-tokens#api-keys)). In a hosted Blaxel job they are injected automatically.
 
 The baseline run:
 
@@ -68,10 +68,11 @@ The handoff deletes the first session and computer before starting a fresh pair.
 ## What success looks like
 
 ```text
+Blaxel workspace: my-workspace (us-was-1)
 Agent Drive: using openai-agents-api-context
-started Blaxel sandbox ...
+started Blaxel sandbox openai-agents-api-ef1bcb12
 installed Codex codex-cli 0.153.0-alpha.6 in 8s
-created OpenAI session ...
+created OpenAI session sess_...
 environment connected
 final status: idle
 confirmed generated file .../summary.md
@@ -79,10 +80,10 @@ kept durable result on Agent Drive openai-agents-api-context:/openai-agents-api-
 deleted OpenAI session
 deleted Blaxel sandbox
 
-started Blaxel sandbox ...
+started Blaxel sandbox openai-agents-api-handoff-78c0a459
 confirmed saved source .../summary.md
 installed Codex codex-cli 0.153.0-alpha.6 in 5s
-created handoff OpenAI session ...
+created handoff OpenAI session sess_...
 environment connected
 final handoff status: idle
 confirmed review file .../review.md

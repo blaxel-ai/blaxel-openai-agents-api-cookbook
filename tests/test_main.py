@@ -504,6 +504,7 @@ def test_run_script_rejects_reused_project_key_as_executor_key(tmp_path: Path) -
             "OPENAI_API_KEY": "same-key",
             "OPENAI_EXECUTOR_API_KEY": "same-key",
             "BL_API_KEY": "test-only",
+            "BL_WORKSPACE": "test-only",
         }
     )
 
@@ -512,11 +513,35 @@ def test_run_script_rejects_reused_project_key_as_executor_key(tmp_path: Path) -
     assert "installing" not in result.stdout
 
 
-def test_run_script_requires_blaxel_login_or_api_key(tmp_path: Path) -> None:
-    result = run_script({"HOME": str(tmp_path), "OPENAI_API_KEY": "test-only"})
+def test_run_script_requires_valid_blaxel_login_or_api_key(tmp_path: Path) -> None:
+    expired_bl = tmp_path / "bl"
+    expired_bl.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    expired_bl.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "run.sh"],
+        cwd=Path(__file__).parents[1],
+        env={
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "PYTHON_BIN": sys.executable,
+            "HOME": str(tmp_path),
+            "OPENAI_API_KEY": "test-only",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
     assert result.returncode == 1
-    assert "run 'bl login', or export BL_WORKSPACE and BL_API_KEY" in result.stderr
+    assert "Blaxel login is missing or expired" in result.stderr
+
+
+def test_run_script_requires_workspace_with_api_key(tmp_path: Path) -> None:
+    result = run_script(
+        {"HOME": str(tmp_path), "OPENAI_API_KEY": "test-only", "BL_API_KEY": "test-only"}
+    )
+
+    assert result.returncode == 1
+    assert "BL_WORKSPACE is required alongside BL_API_KEY" in result.stderr
 
 
 def test_run_script_rejects_unknown_mode() -> None:

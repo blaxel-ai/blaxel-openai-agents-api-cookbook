@@ -46,7 +46,7 @@ It requires Agent Drive. After the baseline resources are deleted, a fresh OpenA
 Required environment:
 
 - `OPENAI_API_KEY`, the application key; it never enters a Sandbox when `OPENAI_EXECUTOR_API_KEY` is set
-- `OPENAI_EXECUTOR_API_KEY`, recommended: a restricted key (Models: Read only) that is the only key passed into the Sandbox; without it the cookbook warns once and falls back to the project key
+- `OPENAI_EXECUTOR_API_KEY`, recommended: a restricted key (List models: Read only) that is the only key passed into the Sandbox; without it the cookbook warns once and falls back to the project key
 - Blaxel credentials from `bl login`, or `BL_WORKSPACE` and `BL_API_KEY`; hosted Blaxel jobs inject them
 - Git access to the Agents API client repository referenced in `pyproject.toml`
 - `BL_REGION` and `OPENAI_MODEL` are optional overrides
