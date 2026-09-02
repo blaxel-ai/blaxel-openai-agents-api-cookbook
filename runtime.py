@@ -163,10 +163,8 @@ async def stream_agent_output(
         if isinstance(event, SessionTurnCancelledEvent):
             await raise_with_executor_diagnostics(sandbox, "turn was cancelled")
         if isinstance(event, SessionFailedEvent):
-            await raise_with_executor_diagnostics(
-                sandbox,
-                f"session failed: {event.session.error or event.data.get('error')}",
-            )
+            error = getattr(event.session, "error", None) or "unknown error"
+            await raise_with_executor_diagnostics(sandbox, f"session failed: {error}")
         saw_text_delta, output_text = print_event(event, saw_text_delta)
         if output_text:
             output_parts.append(output_text)

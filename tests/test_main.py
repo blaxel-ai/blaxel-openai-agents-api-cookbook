@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from agent_api_sdk import SelfHostedEnvironmentInfo, SessionTurnFailedEvent
+from agent_api_sdk import SelfHostedEnvironmentInfo, SessionFailedEvent, SessionTurnFailedEvent
 from blaxel.core.client.errors import UnexpectedStatus
 
 import handoff
@@ -446,6 +446,45 @@ async def test_stream_agent_output_reports_failed_turn_with_executor_logs() -> N
             FailingSession(), SimpleNamespace(process=Process()), "read the report"
         )
     assert "codex: exited" in str(failure.value)
+
+
+@pytest.mark.asyncio
+async def test_stream_agent_output_reports_failed_session_with_executor_logs() -> None:
+    class FailingSession:
+        async def stream(self, *, input: str) -> Any:
+            del input
+            yield SessionFailedEvent.model_validate(
+                {
+                    "event_id": "evt_1",
+                    "session_id": "sess_1",
+                    "type": "session.failed",
+                    "session": {
+                        "id": "sess_1",
+                        "object": "agent.session",
+                        "created_at": 1,
+                        "last_active_at": 1,
+                        "status": "failed",
+                        "error": "executor never connected",
+                        "agent": {},
+                        "environment": {
+                            "type": "self_hosted",
+                            "environment_id": "env_1",
+                            "workspace_directory": "/workspace",
+                        },
+                    },
+                }
+            )
+
+    class Process:
+        async def get(self, name: str) -> Any:
+            assert name == runtime.EXECUTOR_NAME
+            return SimpleNamespace(status="failed", stderr="", stdout="codex: boot", logs="")
+
+    with pytest.raises(RuntimeError, match="session failed: executor never connected") as failure:
+        await runtime.stream_agent_output(  # type: ignore[arg-type]
+            FailingSession(), SimpleNamespace(process=Process()), "read the report"
+        )
+    assert "codex: boot" in str(failure.value)
 
 
 @dataclass
