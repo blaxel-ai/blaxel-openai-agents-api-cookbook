@@ -23,13 +23,16 @@ from context_store import (
 from runtime import (
     WORKSPACE,
     cleanup,
+    environment_id_of,
     install_codex,
+    resolve_blaxel_workspace,
+    resolve_openai_keys,
     start_exec_server,
     stream_agent_output,
 )
 
 VERIFICATION_MARKER = "BLAXEL_AGENT_FILE_7C4E91"
-DEFAULT_MODEL = "gpt-5.6"
+DEFAULT_MODEL = "gpt-5.6-sol"
 DEFAULT_REGION = "us-was-1"
 EXAMPLE_DIR = Path(__file__).resolve().parent
 
@@ -38,9 +41,8 @@ async def run_report(
     *,
     drive_mode: AgentDriveMode | None = None,
 ) -> tuple[int, ContextStore]:
-    api_key = required_env("OPENAI_API_KEY")
-    workspace = required_env("BL_WORKSPACE")
-    required_env("BL_API_KEY")
+    api_key, executor_api_key = resolve_openai_keys()
+    workspace = resolve_blaxel_workspace()
     model = os.environ.get("OPENAI_MODEL", DEFAULT_MODEL)
     region = os.environ.get("BL_REGION", DEFAULT_REGION)
     session: AsyncAgentSession | None = None
@@ -74,14 +76,8 @@ async def run_report(
                     "workspace_directory": WORKSPACE,
                 },
             )
-            environment = session.info.environment
-            if environment.type != "self_hosted":
-                raise RuntimeError(
-                    f"expected self-hosted environment, got {environment.type}"
-                )
-
             print(f"created OpenAI session {session.id}")
-            await start_exec_server(sandbox, api_key, environment.environment_id)
+            await start_exec_server(sandbox, executor_api_key, environment_id_of(session))
 
             print("\nagent output:\n")
             agent_output = await stream_agent_output(
@@ -117,13 +113,6 @@ async def run_report(
 async def main() -> int:
     status, _store = await run_report()
     return status
-
-
-def required_env(name: str) -> str:
-    value = os.environ.get(name)
-    if not value:
-        raise RuntimeError(f"{name} is required")
-    return value
 
 
 async def create_sandbox(

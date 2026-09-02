@@ -26,7 +26,9 @@ from main import (
 from runtime import (
     WORKSPACE,
     cleanup,
+    environment_id_of,
     install_codex,
+    resolve_openai_keys,
     start_exec_server,
     stream_agent_output,
 )
@@ -55,7 +57,7 @@ async def run_review(store: ContextStore) -> int:
             f"Request access: {store.access_url}"
         )
 
-    api_key = os.environ["OPENAI_API_KEY"]
+    api_key, executor_api_key = resolve_openai_keys()
     model = os.environ.get("OPENAI_MODEL", DEFAULT_MODEL)
     region = os.environ.get("BL_REGION", DEFAULT_REGION)
     session: AsyncAgentSession | None = None
@@ -90,14 +92,8 @@ async def run_review(store: ContextStore) -> int:
                     "workspace_directory": WORKSPACE,
                 },
             )
-            environment = session.info.environment
-            if environment.type != "self_hosted":
-                raise RuntimeError(
-                    f"expected self-hosted environment, got {environment.type}"
-                )
-
             print(f"created handoff OpenAI session {session.id}")
-            await start_exec_server(sandbox, api_key, environment.environment_id)
+            await start_exec_server(sandbox, executor_api_key, environment_id_of(session))
 
             print("\nhandoff agent output:\n")
             agent_output = await stream_agent_output(

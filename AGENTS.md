@@ -17,7 +17,7 @@ Do not turn it into a framework.
 1. `README.md` — user workflow
 2. `main.py` — live resource lifecycle
 3. `context_store.py` — Agent Drive access, scoping, and fallback
-4. `runtime.py` — executor, streaming, diagnostics, and cleanup
+4. `runtime.py` — credentials, executor, streaming, diagnostics, and cleanup
 5. `run.sh` — access and installation preflight
 6. `tests/` — executable contract
 
@@ -45,11 +45,10 @@ It requires Agent Drive. After the baseline resources are deleted, a fresh OpenA
 
 Required environment:
 
-- `OPENAI_API_KEY`
-- `BL_WORKSPACE`
-- `BL_API_KEY`
-- existing Git access to the Agents API SDK source pinned in `pyproject.toml`
-- `GITHUB_TOKEN` only when the Git credential helper cannot read that source
+- `OPENAI_API_KEY`, the application key; it never enters a Sandbox when `OPENAI_EXECUTOR_API_KEY` is set
+- `OPENAI_EXECUTOR_API_KEY`, recommended: a restricted key (Models: Read only) that is the only key passed into the Sandbox; without it the cookbook warns once and falls back to the project key
+- Blaxel credentials from `bl login`, or `BL_WORKSPACE` and `BL_API_KEY`; hosted Blaxel jobs inject them
+- Git access to the Agents API client repository referenced in `pyproject.toml`
 - `BL_REGION` and `OPENAI_MODEL` are optional overrides
 - `BL_AGENT_DRIVE_MODE=auto|required|off` controls the baseline policy; `--handoff` requires Agent Drive and refuses `off`
 - `BL_AGENT_DRIVE_NAME` optionally selects the reusable drive
@@ -93,8 +92,9 @@ The generated prose is non-deterministic. The marker is not. `idle` without the 
 - Stop before creating handoff resources when `BL_AGENT_DRIVE_MODE=off`
 - Keep webhooks, concurrent sessions, and broader orchestration out of this recipe
 - Do not open an inbound sandbox port for this example
-- Preserve explicit model, SDK, executor, image, region, and lifetime pins
-- Inspect the pinned Agents API client source before changing a pin
+- Track what OpenAI ships during the beta: the client follows `main`, Codex follows the `alpha` npm tag, and the Blaxel SDK is a compatible range. Do not reintroduce commit or exact-version pins; record the verified versions in the README table instead
+- Keep the model, image, region, and lifetime explicit in code
+- Re-run `./run.sh` and `./run.sh --handoff` whenever the client or executor moved, and refresh the README versions table
 - Add tests when changing credentials, commands, streaming, verification, or cleanup
 - Never hide cleanup failures
 - Do not commit generated environments, caches, credentials, or run output
@@ -119,8 +119,8 @@ If interrupted, use the printed IDs to confirm both resources are gone before re
 
 ## Source of truth
 
-- `pyproject.toml` pins the OpenAI Agents API SDK and Blaxel SDK
-- replace the access-controlled SDK source with OpenAI's published package before public release
-- `main.py` pins the model, sandbox image, region, and lifetime
-- `runtime.py` pins the Codex executor and Agents API endpoint
-- The pinned OpenAI Agents API SDK defines client behavior
+- `pyproject.toml` references the OpenAI Agents API client and the Blaxel SDK range
+- switch the client reference to whatever install path OpenAI documents at the public beta
+- `main.py` sets the model, sandbox image, region, and lifetime
+- `runtime.py` sets the Codex executor tag, the Agents API endpoint, and the credential rules
+- The README versions table records the last verified combination

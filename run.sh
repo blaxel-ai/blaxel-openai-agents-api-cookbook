@@ -5,7 +5,6 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="${ROOT_DIR}/.venv"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-SDK_REPOSITORY="https://github.com/OpenAI-Early-Access/agents-api-python-preview.git"
 
 fail() {
   printf 'preflight error: %s\n' "$*" >&2
@@ -33,42 +32,11 @@ command -v "${PYTHON_BIN}" >/dev/null 2>&1 || fail "${PYTHON_BIN} is not install
   || fail "Python 3.11 through 3.14 is required"
 
 [[ -n "${OPENAI_API_KEY:-}" ]] || fail "OPENAI_API_KEY is required"
-[[ -n "${BL_WORKSPACE:-}" ]] || fail "BL_WORKSPACE is required"
-[[ -n "${BL_API_KEY:-}" ]] || fail "BL_API_KEY is required"
-
-GIT_CONFIG_ENTRIES=0
-add_git_config() {
-  export "GIT_CONFIG_KEY_${GIT_CONFIG_ENTRIES}=$1"
-  export "GIT_CONFIG_VALUE_${GIT_CONFIG_ENTRIES}=$2"
-  GIT_CONFIG_ENTRIES=$((GIT_CONFIG_ENTRIES + 1))
-  export GIT_CONFIG_COUNT="${GIT_CONFIG_ENTRIES}"
-}
-
-# Optional: install the pinned client from a repository you can read instead of the
-# upstream early-access repository. pyproject.toml keeps the upstream pin either way.
-if [[ -n "${AGENTS_API_SDK_MIRROR:-}" ]]; then
-  MIRROR_URL="${AGENTS_API_SDK_MIRROR}"
-  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-    MIRROR_URL="${MIRROR_URL/https:\/\/github.com\//https://x-access-token:${GITHUB_TOKEN}@github.com/}"
-  fi
-  add_git_config "url.${MIRROR_URL}.insteadOf" "${SDK_REPOSITORY}"
-  # Never log the raw value: the URL may carry embedded credentials.
-  MIRROR_LABEL="$(printf '%s' "${AGENTS_API_SDK_MIRROR}" | sed -E 's#://[^/@]*@#://***@#')"
-  printf 'installing the Agents API client from %s\n' "${MIRROR_LABEL}"
+if [[ -n "${OPENAI_EXECUTOR_API_KEY:-}" && "${OPENAI_EXECUTOR_API_KEY}" == "${OPENAI_API_KEY}" ]]; then
+  fail "OPENAI_EXECUTOR_API_KEY must be a separate restricted key, not a copy of OPENAI_API_KEY"
 fi
-
-if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-  add_git_config "url.https://x-access-token:${GITHUB_TOKEN}@github.com/.insteadOf" "https://github.com/"
-fi
-
-if ! GIT_TERMINAL_PROMPT=0 git ls-remote "${SDK_REPOSITORY}" HEAD >/dev/null 2>&1; then
-  fail "cannot read the Agents API client source pinned in pyproject.toml; export GITHUB_TOKEN with read access to it, or export AGENTS_API_SDK_MIRROR with a repository you can read"
-fi
-
-PINNED_SDK_SHA="$(sed -n 's/.*agents-api-python-preview\.git@\([0-9a-f]\{40\}\).*/\1/p' "${ROOT_DIR}/pyproject.toml")"
-if [[ -n "${AGENTS_API_SDK_MIRROR:-}" && -n "${PINNED_SDK_SHA}" ]] \
-  && ! GIT_TERMINAL_PROMPT=0 git ls-remote "${SDK_REPOSITORY}" | grep -q "^${PINNED_SDK_SHA}"; then
-  printf 'warning: %s exposes no ref at the pinned commit %s\n' "${MIRROR_LABEL}" "${PINNED_SDK_SHA}" >&2
+if [[ -z "${BL_API_KEY:-}" && ! -f "${HOME}/.blaxel/config.yaml" ]]; then
+  fail "Blaxel credentials are required: run 'bl login', or export BL_WORKSPACE and BL_API_KEY"
 fi
 
 if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
@@ -77,7 +45,8 @@ if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
 fi
 
 printf 'installing pinned cookbook dependencies\n'
-"${VENV_DIR}/bin/python" -m pip --disable-pip-version-check install -e "${ROOT_DIR}[dev]"
+"${VENV_DIR}/bin/python" -m pip --disable-pip-version-check --quiet install -e "${ROOT_DIR}" \
+  || fail "dependency installation failed; the Agents API client pinned in pyproject.toml must be reachable from this machine"
 
 printf '%s\n' "${RUN_LABEL}"
 exec "${VENV_DIR}/bin/python" "${ENTRYPOINT}"
