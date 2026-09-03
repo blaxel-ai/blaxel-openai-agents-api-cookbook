@@ -20,11 +20,19 @@ case "${1:-}" in
     ENTRYPOINT="${ROOT_DIR}/handoff.py"
     RUN_LABEL="running a fresh-session Agent Drive handoff"
     ;;
+  "--deploy-webhook")
+    ENTRYPOINT="${ROOT_DIR}/webhook/deploy.py"
+    RUN_LABEL="deploying the webhook handler to a Blaxel Sandbox"
+    ;;
+  "--reconnect")
+    ENTRYPOINT="${ROOT_DIR}/webhook/reconnect.py"
+    RUN_LABEL="running a webhook-managed session and reconnecting after deleting its worker"
+    ;;
   *)
-    fail "usage: ./run.sh [--handoff]"
+    fail "usage: ./run.sh [--handoff | --deploy-webhook | --reconnect]"
     ;;
 esac
-[[ $# -le 1 ]] || fail "usage: ./run.sh [--handoff]"
+[[ $# -le 1 ]] || fail "usage: ./run.sh [--handoff | --deploy-webhook | --reconnect]"
 
 command -v "${PYTHON_BIN}" >/dev/null 2>&1 || fail "${PYTHON_BIN} is not installed"
 

@@ -96,6 +96,65 @@ The first agent must copy an exact marker from `sample_report.txt` into both its
 
 Both computers and OpenAI sessions are temporary. When Agent Drive is enabled, only the files remain under one unique `runs/<id>/` folder.
 
+## Let a webhook handler run the Sandbox
+
+`run.sh` and `run.sh --handoff` are application-managed: the script starts the Sandbox and the executor itself. The Agents API also supports **webhook-managed** sandboxes, where the application only creates sessions and sends input, and a handler deployed once in your Blaxel account starts or reconnects the Sandbox when OpenAI asks for one. The [`webhook/`](webhook) directory is that handler.
+
+```mermaid
+flowchart LR
+    App["Your application<br/>(Agents API only)"] --> OpenAI["OpenAI Agents API<br/>(agent, session state)"]
+    OpenAI -->|"agent.session.action_required"| Handler["Blaxel-hosted handler"]
+    Handler -->|"start or reconnect"| Worker["Worker Sandbox<br/>codex exec-server"]
+    Worker -->|"outbound connection"| OpenAI
+    Worker --- Drive[("Agent Drive<br/>files outlive the worker")]
+```
+
+### Deploy the handler
+
+The controller creates workers on your behalf, so it needs a Blaxel API key rather than a `bl login` session.
+
+```bash
+export BL_WORKSPACE='<blaxel-workspace>'
+export BL_API_KEY='<blaxel-api-key>'
+./run.sh --deploy-webhook
+```
+
+The first deploy creates a saved OpenAI agent and prints `export OPENAI_AGENT_ID=...`; export it. It then starts the controller Sandbox `openai-agents-api-webhook-controller` in `us-was-1` and prints its public webhook URL. Register that URL in your OpenAI project under Settings, Webhooks, for `agent.session.action_required` and `agent.session.failed`, export the signing secret as `OPENAI_WEBHOOK_SECRET`, and run the deploy again. Until the secret is configured the endpoint answers `503`.
+
+### Prove reconnection with files preserved
+
+```bash
+./run.sh --reconnect
+```
+
+The proof talks only to the Agents API. It creates a session for the saved agent and sends a first turn; the handler starts a worker, mounts the shared Agent Drive path, and the agent writes `note.md`. The script then deletes that worker and sends a second turn in the same session. OpenAI notices the executor is gone, sends `agent.session.action_required`, and the handler starts a replacement worker on the same Drive path. The run passes only when the replacement reads the marker the first worker wrote.
+
+```text
+created OpenAI session sess_...; the webhook handler owns worker openai-agents-api-worker-...
+environment connected
+confirmed .../note.md on worker openai-agents-api-worker-...
+deleted worker openai-agents-api-worker-...; the session and its Agent Drive files remain
+environment connected
+confirmed replacement worker openai-agents-api-worker-... read the file the first worker wrote
+kept .../note.md and .../review.md on Agent Drive
+deleted OpenAI session
+deleted Blaxel sandbox
+```
+
+### How the handler behaves
+
+| Rule | Why |
+| --- | --- |
+| Wakes only on `agent.session.action_required` with `environment_connection`, after re-reading the session | `session.turn.created` and `agent.session.in_progress` arrive too late, and `function_call` actions belong to the application |
+| Never stops a worker on `idle` | `session.idle` can fire before the waiting input starts its turn |
+| One worker per session, named from the session ID and labeled `agents-session-id` | A reconnect finds the same Sandbox, and `bl get sandboxes` shows which session owns which worker |
+| Holds the worker awake with process keep-alive while the executor runs | A Blaxel microVM suspends within seconds of API inactivity, even in the middle of a command |
+| Passes only `OPENAI_EXECUTOR_API_KEY` into workers | The project key and the signing secret stay on the controller |
+| Deletes the worker when the session reaches `failed`; otherwise leaves deletion to you | Deleting a session sends no webhook, so your application must delete the worker too |
+| Verifies every delivery and stores it in SQLite before answering `200` | The queue survives controller restarts, and failed provisioning retries five times |
+
+Workers live for `WORKER_TTL` (default `2h`) from creation; set it above your longest session. The controller Sandbox lives for `CONTROLLER_TTL` (default `24h`), and redeploying keeps its queue. When you are done, remove the OpenAI webhook, delete the controller and any remaining `openai-agents-api-worker-*` Sandboxes, and delete the API session.
+
 ## If Agent Drive is not enabled
 
 If the workspace does not have Agent Drive access, the default run still works with temporary sandbox storage and prints the exact Blaxel Console page where the signed-in workspace can request access.
@@ -131,7 +190,7 @@ Start with the pieces that are specific to the demo:
 Keep the lifecycle and safety pieces:
 
 - OpenAI session and self-hosted environment connection
-- Blaxel Sandbox creation and cleanup
+- Blaxel Sandbox creation and cleanup, or the webhook handler when OpenAI should trigger it
 - Agent Drive access handling and scoped folders
 - event streaming, deterministic confirmation, and failure diagnostics
 
@@ -208,7 +267,10 @@ Override the model, region, and executor with `OPENAI_MODEL`, `BL_REGION`, and `
 | `handoff.py` | fresh agent and computer continue from the saved file |
 | `context_store.py` | Agent Drive access, scoped storage, and fallback |
 | `runtime.py` | credentials, Codex executor, event streaming, diagnostics, and cleanup |
-| `run.sh` | access preflight and one-command setup |
+| `run.sh` | access preflight and one-command setup for every mode |
+| `webhook/handler.py` | Blaxel-hosted controller: signature check, durable queue, one worker per session |
+| `webhook/deploy.py` | deploys the controller to a Sandbox and prints the webhook URL |
+| `webhook/reconnect.py` | deletes a worker mid-session and proves the replacement reads its files |
 | `sample_report.txt` | replaceable sample input |
 | `tests/` | lifecycle, access, confirmation, and cleanup checks |
 | `AGENTS.md` | instructions for coding agents |
@@ -221,11 +283,11 @@ Override the model, region, and executor with `OPENAI_MODEL`, `BL_REGION`, and `
 ```bash
 .venv/bin/python -m pytest
 .venv/bin/ruff check .
-.venv/bin/python -m compileall -q main.py handoff.py context_store.py runtime.py tests
+.venv/bin/python -m compileall -q main.py handoff.py context_store.py runtime.py webhook tests
 bash -n run.sh
 ```
 
-`./run.sh` and `./run.sh --handoff` create hosted resources and invoke a model.
+`./run.sh`, `./run.sh --handoff`, `./run.sh --deploy-webhook`, and `./run.sh --reconnect` create hosted resources; all but the deploy invoke a model.
 
 ## Links
 

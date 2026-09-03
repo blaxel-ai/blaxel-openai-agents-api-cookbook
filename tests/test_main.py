@@ -593,4 +593,4 @@ def test_run_script_rejects_unknown_mode() -> None:
     )
 
     assert result.returncode == 1
-    assert "usage: ./run.sh [--handoff]" in result.stderr
+    assert "usage: ./run.sh [--handoff | --deploy-webhook | --reconnect]" in result.stderr

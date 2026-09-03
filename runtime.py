@@ -142,9 +142,10 @@ def exec_server_command(environment_id: str) -> list[str]:
 
 async def stream_agent_output(
     session: AsyncAgentSession,
-    sandbox: SandboxInstance,
+    sandbox: SandboxInstance | None,
     prompt: str,
 ) -> str:
+    """Stream one turn. Without a sandbox (webhook-managed flow) failures carry no logs."""
     saw_text_delta = False
     connected = False
     output_parts: list[str] = []
@@ -183,9 +184,11 @@ def print_event(event: SessionEvent, saw_text_delta: bool) -> tuple[bool, str]:
 
 
 async def raise_with_executor_diagnostics(
-    sandbox: SandboxInstance,
+    sandbox: SandboxInstance | None,
     message: str,
 ) -> None:
+    if sandbox is None:
+        raise RuntimeError(f"{message}\nexecutor logs live on the webhook handler's worker")
     process = await sandbox.process.get(EXECUTOR_NAME)
     status = getattr(process.status, "value", str(process.status))
     logs = process.stderr or process.stdout or process.logs or "(no executor output)"
