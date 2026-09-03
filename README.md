@@ -71,7 +71,7 @@ The handoff deletes the first session and computer before starting a fresh pair.
 Blaxel workspace: my-workspace (us-was-1)
 Agent Drive: using openai-agents-api-context
 started Blaxel sandbox openai-agents-api-ef1bcb12
-installed Codex codex-cli 0.153.0-alpha.6 in 8s
+installed Codex codex-cli 0.154.0-alpha.1 in 6s
 created OpenAI session sess_...
 environment connected
 final status: idle
@@ -82,7 +82,7 @@ deleted Blaxel sandbox
 
 started Blaxel sandbox openai-agents-api-handoff-78c0a459
 confirmed saved source .../summary.md
-installed Codex codex-cli 0.153.0-alpha.6 in 5s
+installed Codex codex-cli 0.154.0-alpha.1 in 5s
 created handoff OpenAI session sess_...
 environment connected
 final handoff status: idle
@@ -254,7 +254,7 @@ The Agents API is in beta and its server contract moves, so the cookbook tracks 
 | Region | `us-was-1` | same |
 | OpenAI Agents API client | `main` | `90ab02c` (0.3.0) |
 | Blaxel Python SDK | `>=0.4.7,<0.5` | `0.4.7` |
-| Codex executor | `@openai/codex@alpha` | `0.153.0-alpha.6` |
+| Codex executor | `@openai/codex@alpha` | `0.154.0-alpha.1` |
 | Sandbox lifetime | 15 minutes | same |
 
 Override the model, region, and executor with `OPENAI_MODEL`, `BL_REGION`, and `CODEX_VERSION`. Set `BL_AGENT_DRIVE_NAME` to choose another reusable Drive.
