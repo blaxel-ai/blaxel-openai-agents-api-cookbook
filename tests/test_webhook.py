@@ -396,3 +396,68 @@ def test_controller_environment_defaults_region_and_passes_optional(
 async def test_diagnostics_without_sandbox_still_fail_loudly() -> None:
     with pytest.raises(RuntimeError, match="turn failed: boom"):
         await runtime.raise_with_executor_diagnostics(None, "turn failed: boom")
+
+
+async def test_wait_for_deletion_returns_when_gone(monkeypatch: pytest.MonkeyPatch) -> None:
+    states = iter(["DELETING", "DELETING", None])
+
+    async def worker_status(name: str) -> str | None:
+        return next(states)
+
+    monkeypatch.setattr(common, "worker_status", worker_status)
+    await common.wait_for_deletion("w", timeout_seconds=5, poll_seconds=0)
+
+
+async def test_wait_for_deletion_gives_up_after_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def worker_status(name: str) -> str | None:
+        return "DELETING"
+
+    monkeypatch.setattr(common, "worker_status", worker_status)
+    with pytest.raises(RuntimeError, match="still deleting"):
+        await common.wait_for_deletion("w", timeout_seconds=0, poll_seconds=0)
+
+
+async def test_ensure_worker_waits_for_a_deleting_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    async def worker_status(name: str) -> str | None:
+        return "DELETING"
+
+    async def wait_for_deletion(name: str, **_: Any) -> None:
+        calls.append("waited")
+
+    async def create_if_not_exists(spec: dict[str, Any]) -> Any:
+        calls.append("created")
+        return SimpleNamespace(name=spec["name"])
+
+    async def prepare_worker(worker: Any, codex_version: str) -> None:
+        calls.append("prepared")
+
+    monkeypatch.setattr(handler, "worker_status", worker_status)
+    monkeypatch.setattr(handler, "wait_for_deletion", wait_for_deletion)
+    monkeypatch.setattr(handler, "prepare_worker", prepare_worker)
+    monkeypatch.setattr(
+        handler, "SandboxInstance", SimpleNamespace(create_if_not_exists=create_if_not_exists)
+    )
+    worker, created = await handler.ensure_worker("w", "sess_1", config(), STORE)
+    assert (worker.name, created) == ("w", True)
+    assert calls == ["waited", "created", "prepared"]
+
+
+async def test_ensure_worker_treats_terminated_as_new(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def worker_status(name: str) -> str | None:
+        return "TERMINATED"
+
+    async def create_if_not_exists(spec: dict[str, Any]) -> Any:
+        return SimpleNamespace(name=spec["name"])
+
+    async def prepare_worker(worker: Any, codex_version: str) -> None:
+        return None
+
+    monkeypatch.setattr(handler, "worker_status", worker_status)
+    monkeypatch.setattr(handler, "prepare_worker", prepare_worker)
+    monkeypatch.setattr(
+        handler, "SandboxInstance", SimpleNamespace(create_if_not_exists=create_if_not_exists)
+    )
+    _, created = await handler.ensure_worker("w", "sess_1", config(), STORE)
+    assert created is True

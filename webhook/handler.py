@@ -39,11 +39,15 @@ from context_store import (
 )
 from webhook.common import (
     CONNECTION_ACTION,
+    DELETING_STATUSES,
     EXECUTOR_PREFIX,
     FAILED_EVENT,
+    GONE_STATUSES,
     SESSION_LABEL,
     WAKE_EVENT,
+    wait_for_deletion,
     worker_name,
+    worker_status,
 )
 
 AGENTS_API_URL = "https://api.openai.com/v1/agents"
@@ -262,13 +266,7 @@ def worker_specification(name: str, session_id: str, config: ControllerConfig) -
 
 
 async def worker_exists(name: str) -> bool:
-    try:
-        await SandboxInstance.get(name)
-    except SandboxAPIError as error:
-        if error.status_code == 404:
-            return False
-        raise
-    return True
+    return await worker_status(name) is not None
 
 
 async def delete_worker(name: str) -> None:
@@ -285,7 +283,12 @@ async def ensure_worker(
     config: ControllerConfig,
     store: ContextStore,
 ) -> tuple[SandboxInstance, bool]:
-    existed = await worker_exists(name)
+    status = await worker_status(name)
+    if status in DELETING_STATUSES:
+        log(event="worker deleting", worker=name, status=status)
+        await wait_for_deletion(name)
+        status = None
+    existed = status is not None and status not in GONE_STATUSES
     worker = await SandboxInstance.create_if_not_exists(
         worker_specification(name, session_id, config)
     )
