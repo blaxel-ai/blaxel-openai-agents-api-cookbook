@@ -127,13 +127,13 @@ The first deploy creates a saved OpenAI agent and prints `export OPENAI_AGENT_ID
 ./run.sh --reconnect
 ```
 
-The proof talks only to the Agents API. It creates a session for the saved agent and sends a first turn; the handler starts a worker, mounts the shared Agent Drive path, and the agent writes `note.md`. The script then deletes that worker and sends a second turn in the same session. OpenAI notices the executor is gone, sends `agent.session.action_required`, and the handler starts a replacement worker on the same Drive path. The run passes only when the replacement reads the marker the first worker wrote.
+The proof talks only to the Agents API. It creates a session for the saved agent and sends a first turn; the handler starts a worker, mounts the shared Agent Drive path, and the agent writes `note.md`. The script then stops the executor, deletes that worker, waits for OpenAI's `session.environment.disconnected` event, and sends a second turn in the same session. OpenAI sends `agent.session.action_required` again, and the handler starts a replacement worker on the same Drive path. The run passes only when the replacement reads the marker the first worker wrote.
 
 ```text
 created OpenAI session sess_...; the webhook handler owns worker openai-agents-api-worker-...
 environment connected
 confirmed .../note.md on worker openai-agents-api-worker-...
-deleted worker openai-agents-api-worker-...; the session and its Agent Drive files remain
+deleted worker openai-agents-api-worker-...; OpenAI reported the environment disconnected after 5s; the session and its Agent Drive files remain
 environment connected
 confirmed replacement worker openai-agents-api-worker-... read the file the first worker wrote
 kept .../note.md and .../review.md on Agent Drive
@@ -152,6 +152,9 @@ deleted Blaxel sandbox
 | Passes only `OPENAI_EXECUTOR_API_KEY` into workers | The project key and the signing secret stay on the controller |
 | Deletes the worker when the session reaches `failed`; otherwise leaves deletion to you | Deleting a session sends no webhook, so your application must delete the worker too |
 | Verifies every delivery and stores it in SQLite before answering `200` | The queue survives controller restarts, and failed provisioning retries five times |
+| Waits while a worker is still `DELETING` and treats a lingering `TERMINATED` record as absent | Blaxel deletes asynchronously, and creating over the terminated record yields a fresh Sandbox |
+
+Release compute deliberately: stop the executor process before deleting a worker, and send the next input only after OpenAI emits `session.environment.disconnected` (about five seconds later). Input sent while OpenAI still believes the executor is connected runs without file access and does not trigger the wake webhook.
 
 Workers live for `WORKER_TTL` (default `2h`) from creation; set it above your longest session. The controller Sandbox lives for `CONTROLLER_TTL` (default `24h`), and redeploying keeps its queue. When you are done, remove the OpenAI webhook, delete the controller and any remaining `openai-agents-api-worker-*` Sandboxes, and delete the API session.
 

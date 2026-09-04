@@ -101,6 +101,7 @@ The reconnect proof also requires:
 
 - the application never calls the Blaxel SDK to start a worker; the controller does
 - `environment connected` printed on both turns, the second after the first worker was deleted
+- OpenAI's `session.environment.disconnected` event observed between the turns; a second turn sent before it answers that the environment is offline and sends no webhook, which is a test defect, not a handler defect
 - the second response and `review.md` contain the marker written by the first worker
 - the OpenAI session and the replacement worker explicitly deleted; the controller and Drive remain
 
@@ -110,6 +111,7 @@ The generated prose is non-deterministic. The marker is not. `idle` without the 
 
 - Do not run the live path without authorization to create resources and invoke a model
 - Keep one session, one sandbox, and one file task in the baseline
+- Stop the executor before deleting a worker whenever a reconnect is expected next
 - Prefer Agent Drive in `auto` mode; fallback only for the exact entitlement error or an unsupported region
 - Never turn auth, mount, or platform failures into a silent ephemeral fallback
 - Keep Agent Drive permissions scoped by workload label and drive path
