@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import uuid
@@ -88,7 +89,12 @@ def requested_drive_name() -> str:
     return value
 
 
-def drive_configuration(name: str) -> dict[str, object]:
+def context_scope(session_id: str) -> str:
+    """A stable, label-safe identity for one webhook session and its replacements."""
+    return hashlib.sha256(session_id.encode()).hexdigest()[:24]
+
+
+def drive_configuration(name: str, scope: str | None = None) -> dict[str, object]:
     return {
         "name": name,
         "display_name": "OpenAI Agents API shared context",
@@ -97,24 +103,24 @@ def drive_configuration(name: str) -> dict[str, object]:
             "purpose": "openai-agents-api-cookbook",
             CONTEXT_LABEL: CONTEXT_LABEL_VALUE,
         },
-        "permissions": expected_drive_permissions(),
+        "permissions": expected_drive_permissions(scope),
     }
 
 
-def expected_drive_permissions() -> list[dict[str, object]]:
+def expected_drive_permissions(scope: str | None = None) -> list[dict[str, object]]:
     return [
         {
-            "labels": {CONTEXT_LABEL: CONTEXT_LABEL_VALUE},
+            "labels": {CONTEXT_LABEL: scope or CONTEXT_LABEL_VALUE},
             "mode": "read-write",
             "path": DRIVE_ROOT,
         }
     ]
 
 
-def sandbox_labels() -> dict[str, str]:
+def sandbox_labels(scope: str | None = None) -> dict[str, str]:
     return {
         "purpose": "openai-agents-api-cookbook",
-        CONTEXT_LABEL: CONTEXT_LABEL_VALUE,
+        CONTEXT_LABEL: scope or CONTEXT_LABEL_VALUE,
     }
 
 
@@ -124,6 +130,7 @@ async def resolve_context_store(
     region: str,
     mode: AgentDriveMode | None = None,
     run_id: str | None = None,
+    scope: str | None = None,
 ) -> ContextStore:
     resolved_mode = mode or requested_agent_drive_mode()
     resolved_run_id = run_id or uuid.uuid4().hex[:10]
@@ -149,8 +156,10 @@ async def resolve_context_store(
         )
 
     name = requested_drive_name()
+    if scope is not None:
+        name = f"{name[:24]}-{scope}"
     try:
-        drive = await DriveInstance.create_if_not_exists(drive_configuration(name))
+        drive = await DriveInstance.create_if_not_exists(drive_configuration(name, scope))
     except (DriveAPIError, UnexpectedStatus) as error:
         if not is_agent_drive_access_error(error):
             raise
@@ -166,7 +175,7 @@ async def resolve_context_store(
             reason=f"Agent Drive is not enabled for workspace {workspace!r}",
         )
 
-    verify_drive_configuration(drive, name)
+    verify_drive_configuration(drive, name, scope)
     return ContextStore(
         mode="agent-drive",
         run_id=resolved_run_id,
@@ -185,19 +194,18 @@ def is_agent_drive_access_error(error: DriveAPIError | UnexpectedStatus) -> bool
     return DRIVE_ACCESS_ERROR.lower() in detail.lower()
 
 
-def verify_drive_configuration(drive: DriveInstance, expected_name: str) -> None:
+def verify_drive_configuration(
+    drive: DriveInstance, expected_name: str, scope: str | None = None
+) -> None:
     if drive.name != expected_name:
-        raise RuntimeError(
-            f"Agent Drive returned name {drive.name!r}; expected {expected_name!r}"
-        )
+        raise RuntimeError(f"Agent Drive returned name {drive.name!r}; expected {expected_name!r}")
     if drive.region != AGENT_DRIVE_REGION:
         raise RuntimeError(
-            f"Agent Drive {expected_name!r} is in {drive.region!r}; "
-            f"expected {AGENT_DRIVE_REGION!r}"
+            f"Agent Drive {expected_name!r} is in {drive.region!r}; expected {AGENT_DRIVE_REGION!r}"
         )
 
     permissions = drive.spec.to_dict().get("permissions", [])
-    if permissions != expected_drive_permissions():
+    if permissions != expected_drive_permissions(scope):
         raise RuntimeError(
             f"Agent Drive {expected_name!r} does not have the cookbook's scoped "
             "read-write permission. Set BL_AGENT_DRIVE_NAME to a new drive name."

@@ -11,6 +11,7 @@ import asyncio
 import os
 import sys
 import time
+import uuid
 from pathlib import Path
 
 import httpx
@@ -88,29 +89,13 @@ async def main() -> int:
         await controller.fs.write(f"/app/{relative}", (ROOT / relative).read_text("utf-8"))
     print(f"uploaded {len(CONTROLLER_FILES)} controller files")
 
-    for process in await controller.process.list():
-        if process.name == CONTROLLER_PROCESS and str(process.status) == "running":
-            await controller.process.kill(process.name)
-    await controller.process.exec(
-        {
-            "name": CONTROLLER_PROCESS,
-            "command": (
-                f"/opt/controller/bin/uvicorn webhook.handler:app "
-                f"--host 0.0.0.0 --port {CONTROLLER_PORT}"
-            ),
-            "working_dir": "/app",
-            "env": values,
-            "wait_for_completion": False,
-            "keep_alive": True,
-            "timeout": 0,
-        }
-    )
+    process_name = await start_controller(controller, values)
     preview = await controller.previews.create_if_not_exists(
         {"metadata": {"name": "webhook"}, "spec": {"port": CONTROLLER_PORT, "public": True}}
     )
     if preview.spec is None or not preview.spec.url:
         raise RuntimeError("controller preview URL is unavailable")
-    health = await wait_for_health(controller, preview.spec.url)
+    health = await wait_for_health(controller, preview.spec.url, process_name)
 
     print(f"controller healthy: Agent Drive {health['agent_drive']}")
     print(f"webhook URL: {preview.spec.url}/webhook")
@@ -125,6 +110,31 @@ async def main() -> int:
             "./run.sh --deploy-webhook"
         )
     return 0
+
+
+async def start_controller(controller: SandboxInstance, values: dict[str, str]) -> str:
+    for process in await controller.process.list():
+        is_controller = process.name == CONTROLLER_PROCESS or process.name.startswith(
+            f"{CONTROLLER_PROCESS}-"
+        )
+        if is_controller and str(process.status) == "running":
+            await controller.process.kill(process.name)
+    process_name = f"{CONTROLLER_PROCESS}-{uuid.uuid4().hex[:12]}"
+    await controller.process.exec(
+        {
+            "name": process_name,
+            "command": (
+                f"/opt/controller/bin/uvicorn webhook.handler:app "
+                f"--host 0.0.0.0 --port {CONTROLLER_PORT}"
+            ),
+            "working_dir": "/app",
+            "env": values,
+            "wait_for_completion": False,
+            "keep_alive": True,
+            "timeout": 0,
+        }
+    )
+    return process_name
 
 
 def controller_environment() -> dict[str, str]:
@@ -165,7 +175,7 @@ async def run_step(
     started = time.monotonic()
     result = await controller.process.exec(
         {
-            "name": f"{name}-{int(time.time())}",
+            "name": f"{name}-{uuid.uuid4().hex[:12]}",
             "command": command,
             "working_dir": "/tmp",
             "wait_for_completion": True,
@@ -179,7 +189,9 @@ async def run_step(
     print(f"{name} done in {time.monotonic() - started:.0f}s")
 
 
-async def wait_for_health(controller: SandboxInstance, base_url: str) -> dict[str, object]:
+async def wait_for_health(
+    controller: SandboxInstance, base_url: str, process_name: str
+) -> dict[str, object]:
     deadline = time.monotonic() + HEALTH_TIMEOUT_SECONDS
     async with httpx.AsyncClient(timeout=10) as http:
         while time.monotonic() < deadline:
@@ -190,7 +202,7 @@ async def wait_for_health(controller: SandboxInstance, base_url: str) -> dict[st
             except httpx.HTTPError:
                 pass
             await asyncio.sleep(2)
-    process = await controller.process.get(CONTROLLER_PROCESS)
+    process = await controller.process.get(process_name)
     raise RuntimeError(
         "controller did not become healthy:\n"
         f"{process.stderr or process.stdout or process.logs or '(no controller output)'}"

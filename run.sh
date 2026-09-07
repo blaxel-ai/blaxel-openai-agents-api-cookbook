@@ -45,9 +45,6 @@ if [[ -n "${OPENAI_EXECUTOR_API_KEY:-}" && "${OPENAI_EXECUTOR_API_KEY}" == "${OP
 fi
 if [[ -n "${BL_API_KEY:-}" ]]; then
   [[ -n "${BL_WORKSPACE:-}" ]] || fail "BL_WORKSPACE is required alongside BL_API_KEY"
-else
-  command -v bl >/dev/null 2>&1 && bl token >/dev/null 2>&1 \
-    || fail "Blaxel login is missing or expired: run 'bl login', or export BL_WORKSPACE and BL_API_KEY"
 fi
 
 if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
@@ -56,8 +53,11 @@ if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
 fi
 
 printf 'installing cookbook dependencies\n'
-"${VENV_DIR}/bin/python" -m pip --disable-pip-version-check --quiet install -e "${ROOT_DIR}" \
-  || fail "dependency installation failed; the Agents API client pinned in pyproject.toml must be reachable from this machine"
+"${VENV_DIR}/bin/python" -m pip --disable-pip-version-check --quiet install --upgrade --force-reinstall -e "${ROOT_DIR}" \
+  || fail "dependency installation failed; the Agents API client referenced in pyproject.toml must be reachable from this machine"
+
+"${VENV_DIR}/bin/python" -c 'from runtime import resolve_blaxel_workspace; resolve_blaxel_workspace()' \
+  || fail "Blaxel credentials unavailable: run 'bl login', or export BL_WORKSPACE and BL_API_KEY"
 
 printf '%s\n' "${RUN_LABEL}"
 exec "${VENV_DIR}/bin/python" "${ENTRYPOINT}"

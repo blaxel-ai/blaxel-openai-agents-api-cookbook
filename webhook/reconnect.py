@@ -23,7 +23,7 @@ from runtime import (
     cleanup,
     required_env,
     resolve_blaxel_workspace,
-    stream_agent_output,
+    run_agent_turn,
 )
 from webhook.common import EXECUTOR_PREFIX, wait_for_deletion, worker_name
 
@@ -54,7 +54,7 @@ async def main() -> int:
             print(f"created OpenAI session {session.id}; the webhook handler owns worker {name}")
 
             print("\nfirst turn:\n")
-            first = await stream_agent_output(
+            first = await run_agent_turn(
                 session,
                 None,
                 (
@@ -84,7 +84,7 @@ async def main() -> int:
             )
 
             print("\nsecond turn:\n")
-            second = await stream_agent_output(
+            second = await run_agent_turn(
                 session,
                 None,
                 (

@@ -13,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import runtime
-from context_store import CONTEXT_LABEL, CONTEXT_LABEL_VALUE, ContextStore
+from context_store import CONTEXT_LABEL, ContextStore, context_scope
 from webhook import common, deploy, handler
 
 SECRET_BYTES = b"0123456789abcdef0123456789abcdef"
@@ -84,6 +84,29 @@ def test_verify_signature_accepts_valid_delivery() -> None:
     handler.verify_signature(payload, signed_headers(payload), SECRET, now=NOW)
 
 
+def test_queue_applies_backpressure_without_losing_existing_events(monkeypatch):
+    monkeypatch.setattr(handler, "MAX_QUEUE_JOBS", 1)
+    queue = handler.Queue(":memory:")
+    try:
+        queue.enqueue("first")
+        queue.enqueue("first")
+        with pytest.raises(handler.QueueFull):
+            queue.enqueue("second")
+        assert queue.next_due(0) == ("first", 0, 1)
+        queue.done("first", 1)
+        queue.enqueue("second")
+        assert queue.next_due(0) == ("second", 0, 0)
+    finally:
+        queue.close()
+
+
+def test_controller_rejects_reused_application_key(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "same")
+    monkeypatch.setenv("OPENAI_EXECUTOR_API_KEY", "same")
+    with pytest.raises(RuntimeError, match="separate restricted key"):
+        handler.ControllerConfig.from_env()
+
+
 def test_verify_signature_accepts_any_matching_candidate() -> None:
     payload = wake_event()
     headers = signed_headers(payload)
@@ -123,13 +146,13 @@ def test_queue_deduplicates_and_retries_until_dropped() -> None:
     queue = handler.Queue(":memory:")
     queue.enqueue("sess_1")
     queue.enqueue("sess_1")
-    assert queue.next_due(NOW) == ("sess_1", 0)
+    assert queue.next_due(NOW) == ("sess_1", 0, 1)
 
     attempts = 0
-    while queue.retry("sess_1", attempts, NOW):
+    while queue.retry("sess_1", attempts, NOW, 1):
         attempts += 1
         assert queue.next_due(NOW) is None
-        assert queue.next_due(NOW + handler.RETRY_DELAY_SECONDS) == ("sess_1", attempts)
+        assert queue.next_due(NOW + handler.RETRY_DELAY_SECONDS) == ("sess_1", attempts, 1)
     assert attempts == handler.MAX_ATTEMPTS - 1
     assert queue.next_due(NOW + 3600) is None
 
@@ -137,7 +160,7 @@ def test_queue_deduplicates_and_retries_until_dropped() -> None:
 def test_queue_done_removes_job() -> None:
     queue = handler.Queue(":memory:")
     queue.enqueue("sess_1")
-    queue.done("sess_1")
+    queue.done("sess_1", 0)
     assert queue.next_due(NOW) is None
 
 
@@ -228,7 +251,7 @@ def test_worker_specification_labels_session_and_cookbook() -> None:
     spec = handler.worker_specification("w", "sess_1", config())
     assert spec["labels"] == {
         "purpose": "openai-agents-api-cookbook",
-        CONTEXT_LABEL: CONTEXT_LABEL_VALUE,
+        CONTEXT_LABEL: context_scope("sess_1"),
         common.SESSION_LABEL: "sess_1",
     }
     assert spec["region"] == "us-was-1"
@@ -302,7 +325,17 @@ def test_webhook_queues_verified_connection_events(
     response = client.post("/webhook", content=payload, headers=signed_headers(payload))
     assert response.status_code == 200
     assert response.json() == {"ok": True, "queued": True}
-    assert handler.app.state.queue.next_due(NOW) == ("sess_1", 0)
+    assert handler.app.state.queue.next_due(NOW) == ("sess_1", 0, 0)
+
+
+def test_webhook_returns_retryable_backpressure(client, monkeypatch):
+    monkeypatch.setattr(handler.time, "time", lambda: NOW)
+    monkeypatch.setattr(handler, "MAX_QUEUE_JOBS", 0)
+    payload = wake_event()
+    response = client.post("/webhook", content=payload, headers=signed_headers(payload))
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == str(handler.RETRY_DELAY_SECONDS)
+    assert handler.app.state.queue.next_due(NOW) is None
 
 
 def test_webhook_acknowledges_but_skips_unrelated_events(
@@ -399,7 +432,7 @@ async def test_diagnostics_without_sandbox_still_fail_loudly() -> None:
 
 
 async def test_wait_for_deletion_returns_when_gone(monkeypatch: pytest.MonkeyPatch) -> None:
-    states = iter(["DELETING", "DELETING", None])
+    states = iter(["RUNNING", "DELETING", "TERMINATED"])
 
     async def worker_status(name: str) -> str | None:
         return next(states)
@@ -461,3 +494,110 @@ async def test_ensure_worker_treats_terminated_as_new(monkeypatch: pytest.Monkey
     )
     _, created = await handler.ensure_worker("w", "sess_1", config(), STORE)
     assert created is True
+
+
+def test_queue_keeps_new_event_arriving_during_reconciliation() -> None:
+    queue = handler.Queue(":memory:")
+    queue.enqueue("sess_1")
+    session_id, attempts, revision = queue.next_due(NOW)
+    queue.enqueue("sess_1")  # A failure arrives while the first job awaits provisioning.
+    queue.done(session_id, revision)
+    assert queue.next_due(NOW) == ("sess_1", 0, revision + 1)
+    queue.retry(session_id, attempts, NOW, revision)
+    assert queue.next_due(NOW) == ("sess_1", 0, revision + 1)
+    assert queue.retry(session_id, handler.MAX_ATTEMPTS - 1, NOW, revision)
+    assert queue.next_due(NOW) == ("sess_1", 0, revision + 1)
+    queue.done(session_id, revision + 1)
+    assert queue.next_due(NOW) is None
+    queue.close()
+
+
+def test_queue_migrates_and_preserves_pending_jobs(tmp_path: Path) -> None:
+    import sqlite3
+
+    path = str(tmp_path / "queue.sqlite3")
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "CREATE TABLE jobs(session_id TEXT PRIMARY KEY, attempts INTEGER, retry_at REAL)"
+        )
+        db.execute("INSERT INTO jobs VALUES ('sess_1', 2, 0)")
+    queue = handler.Queue(path)
+    assert queue.next_due(NOW) == ("sess_1", 2, 0)
+    queue.close()
+    reopened = handler.Queue(path)
+    assert reopened.next_due(NOW) == ("sess_1", 2, 0)
+    reopened.close()
+
+
+def test_webhook_rejects_oversized_body(client: TestClient) -> None:
+    response = client.post("/webhook", content=b"x" * (handler.MAX_BODY_BYTES + 1))
+    assert response.status_code == 413
+    assert handler.app.state.queue.next_due(NOW) is None
+
+
+async def test_webhook_bounds_chunked_body_before_reading_the_rest() -> None:
+    from starlette.requests import Request
+
+    chunks = iter([b"x" * handler.MAX_BODY_BYTES, b"x"])
+    received = 0
+
+    async def receive() -> dict:
+        nonlocal received
+        received += 1
+        if received > 2:
+            raise AssertionError("handler kept reading after its limit")
+        return {"type": "http.request", "body": next(chunks), "more_body": True}
+
+    handler.app.state.config = config()
+    request = Request({"type": "http", "app": handler.app, "headers": []}, receive)
+    assert (await handler.webhook(request)).status_code == 413
+    assert received == 2
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        [],
+        None,
+        1,
+        {"data": []},
+        {"data": {"id": "s", "required_action": 1}, "type": common.WAKE_EVENT},
+    ],
+)
+def test_signed_unexpected_json_does_not_crash(
+    event: Any, client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(handler.time, "time", lambda: NOW)
+    payload = json.dumps(event).encode()
+    response = client.post("/webhook", content=payload, headers=signed_headers(payload))
+    assert response.status_code == 200
+    assert response.json()["queued"] is False
+
+
+async def test_redeploy_uses_unique_names_and_stops_only_live_controllers() -> None:
+    process = FakeProcess(
+        [
+            (common.CONTROLLER_PROCESS, "running"),
+            (common.CONTROLLER_PROCESS + "-older", "completed"),
+            (common.CONTROLLER_PROCESS + "-current", "running"),
+            ("other-service", "running"),
+        ]
+    )
+    sandbox = SimpleNamespace(process=process)
+    first = await deploy.start_controller(sandbox, {"TEST": "value"})
+    second = await deploy.start_controller(sandbox, {"TEST": "value"})
+    assert first != second
+    assert all(n.startswith(common.CONTROLLER_PROCESS + "-") for n in [first, second])
+    assert set(process.killed) == {
+        common.CONTROLLER_PROCESS,
+        common.CONTROLLER_PROCESS + "-current",
+    }
+
+
+async def test_existing_mount_must_match_session_drive() -> None:
+    async def mounts() -> list:
+        return [SimpleNamespace(mount_path=handler.MOUNT_PATH, drive_name="other-session")]
+
+    worker = SimpleNamespace(drives=SimpleNamespace(list=mounts))
+    with pytest.raises(RuntimeError, match="unexpected Drive"):
+        await handler.drive_mounted(worker, "expected-session")

@@ -49,14 +49,16 @@ async def wait_for_deletion(
 ) -> None:
     """Deletion is asynchronous: DELETING for a few seconds, then a TERMINATED record lingers.
 
-    Returns once the name is gone, TERMINATED, or otherwise no longer deleting; raises after
-    the timeout. Creating a Sandbox over a TERMINATED record of the same name works.
+    Returns only once the name is gone or TERMINATED; raises after the timeout.
+    Creating a Sandbox over a TERMINATED record of the same name works.
     """
     deadline = time.monotonic() + timeout_seconds
     while True:
         status = await worker_status(name)
-        if status is None or status not in DELETING_STATUSES:
+        if status is None or status in GONE_STATUSES:
             return
         if time.monotonic() >= deadline:
-            raise RuntimeError(f"worker {name} is still deleting after {timeout_seconds:.0f}s")
+            raise RuntimeError(
+                f"worker {name} is still deleting after {timeout_seconds:.0f}s ({status})"
+            )
         await asyncio.sleep(poll_seconds)
