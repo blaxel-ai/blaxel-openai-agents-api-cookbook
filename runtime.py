@@ -147,13 +147,15 @@ async def run_agent_turn(
     session: AsyncAgentSession,
     sandbox: SandboxInstance | None,
     prompt: str,
+    *,
+    timeout_seconds: float = TURN_TIMEOUT_SECONDS,
 ) -> str:
     """Submit once to an idle session and verify its new turn through durable state.
 
     The cookbook owns input to this session. Concurrent input is rejected rather than
     attributing another caller's answer to this task. Live SSE events are not required.
     """
-    async with asyncio.timeout(TURN_TIMEOUT_SECONDS):
+    async with asyncio.timeout(timeout_seconds):
         info = await session.retrieve()
         if info.status != "idle":
             raise RuntimeError("Expected an idle session before submitting a new task")
@@ -170,6 +172,7 @@ async def run_agent_turn(
                 new_turns.append(turn)
             if len(new_turns) > 1 or (turns.has_more and previous_id is None):
                 raise RuntimeError("Concurrent input: expected exactly one new turn")
+            # The SDK also refreshes session.status, inspected by the CLI callers.
             info = await session.retrieve()
             if info.status == "failed":
                 await raise_with_executor_diagnostics(sandbox, "OpenAI session failed")

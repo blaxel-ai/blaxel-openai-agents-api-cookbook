@@ -236,9 +236,9 @@ The Agents API is in beta and its server contract moves, so the cookbook tracks 
 | Codex executor | `@openai/codex@alpha` | `0.154.0-alpha.6` |
 | Sandbox lifetime | 15 minutes | same |
 
-The baseline, fresh-session handoff, parallel team, storage-only example, temporary-storage baseline and local-controller replacement proof passed with this combination. All 108 unit tests pass on Python 3.14 and a clean Python 3.11 install. The latter used locally signed deliveries based on real OpenAI required actions and verified real workers, disconnect events and Drive isolation. Deployment of these local changes and a new OpenAI-origin webhook delivery remain separate release checks.
+The baseline, fresh-session handoff, parallel team, storage-only example, temporary-storage baseline and local-controller replacement proof passed with this combination. All 110 unit tests pass on Python 3.14 and a clean Python 3.11 install. The latter used locally signed deliveries based on real OpenAI required actions and verified real workers, disconnect events and Drive isolation. Deployment of these local changes and a new OpenAI-origin webhook delivery remain separate release checks.
 
-The recipe submits input once to an idle session, waits up to 180 seconds for its new turn to complete, and reads that turn's retained final answer. It rejects concurrent input and paginates retained items with a 1,000-item search bound and a 1 MiB answer limit. Live event-stream delivery is not required. Cleanup cancels unfinished work when OpenAI requires durable idle before deletion.
+The recipe submits input once to an idle session, waits up to 180 seconds for its new turn to complete (600 seconds for webhook-managed turns, including cold worker provisioning), and reads that turn's retained final answer. It rejects concurrent input and paginates retained items with a 1,000-item search bound and a 1 MiB answer limit. Live event-stream delivery is not required. Cleanup cancels unfinished work when OpenAI requires durable idle before deletion.
 
 Override the model, region, and executor with `OPENAI_MODEL`, `BL_REGION`, and `CODEX_VERSION`. Set `BL_AGENT_DRIVE_NAME` to choose another reusable Drive.
 

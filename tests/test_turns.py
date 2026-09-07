@@ -84,12 +84,11 @@ async def test_turn_rejects_ambiguous_concurrent_input():
         await runtime.run_agent_turn(session, None, "do work")
 
 
-async def test_missing_turn_times_out_without_resubmission(monkeypatch):
+async def test_missing_turn_times_out_without_resubmission():
     session = Session()
     session.pending = 100
-    monkeypatch.setattr(runtime, "TURN_TIMEOUT_SECONDS", 0.01)
     with pytest.raises(TimeoutError):
-        await runtime.run_agent_turn(session, None, "do work")
+        await runtime.run_agent_turn(session, None, "do work", timeout_seconds=0.01)
     assert len(session.inputs) == 1
 
 
@@ -118,3 +117,46 @@ def test_python_entrypoint_rejects_project_key_reuse(monkeypatch):
     monkeypatch.setenv("OPENAI_EXECUTOR_API_KEY", "same")
     with pytest.raises(RuntimeError, match="separate restricted key"):
         runtime.resolve_openai_keys()
+
+
+async def test_slow_provisioning_can_use_a_larger_bounded_budget(monkeypatch):
+    import asyncio
+
+    session = Session()
+    session.pending = 2
+    original_sleep = asyncio.sleep
+
+    async def slow_setup(_):
+        await original_sleep(0.03)
+
+    monkeypatch.setattr(runtime.asyncio, "sleep", slow_setup)
+    assert (
+        await runtime.run_agent_turn(session, None, "do work", timeout_seconds=0.5)
+        == "verified answer"
+    )
+    assert session.inputs == ["do work"]
+
+
+async def test_sdk_retrieve_refreshes_cached_status_used_by_callers():
+    from unittest.mock import AsyncMock
+
+    from agent_api_sdk import AsyncAgentSession, SessionInfo
+
+    payload = {
+        "id": "sess_status",
+        "object": "agent.session",
+        "created_at": 1,
+        "last_active_at": 1,
+        "status": "in_progress",
+        "agent": {},
+        "environment": {
+            "type": "self_hosted",
+            "environment_id": "env_status",
+            "workspace_directory": "/workspace",
+        },
+    }
+    client = Record(request=AsyncMock(return_value={**payload, "status": "idle"}))
+    session = AsyncAgentSession(client=client, info=SessionInfo.from_payload(payload))
+    assert session.status == "in_progress"
+    info = await session.retrieve()
+    assert info.status == session.status == "idle"

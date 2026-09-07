@@ -31,6 +31,7 @@ FIRST_MARKER = "BLAXEL_WEBHOOK_FIRST_3A9F1C"
 SECOND_MARKER = "BLAXEL_WEBHOOK_SECOND_7D02E4"
 DELETE_WAIT_SECONDS = 300
 DISCONNECT_WAIT_SECONDS = 180
+TURN_TIMEOUT_SECONDS = 600  # Includes webhook delivery, cold worker setup and execution.
 
 
 async def main() -> int:
@@ -62,6 +63,7 @@ async def main() -> int:
                     f"this marker on its own line: {FIRST_MARKER}. Then respond with the marker "
                     "and the path."
                 ),
+                timeout_seconds=TURN_TIMEOUT_SECONDS,
             )
             require_idle(session, "first")
             worker = await SandboxInstance.get(name)
@@ -92,6 +94,7 @@ async def main() -> int:
                     f"containing that marker and this second marker: {SECOND_MARKER}. "
                     "Respond with both markers."
                 ),
+                timeout_seconds=TURN_TIMEOUT_SECONDS,
             )
             require_idle(session, "second")
             replacement = await SandboxInstance.get(name)
