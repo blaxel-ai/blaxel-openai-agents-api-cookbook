@@ -144,6 +144,21 @@ export BL_API_KEY='<blaxel-api-key>'
 
 The first deploy creates a saved OpenAI agent and prints `export OPENAI_AGENT_ID=...`; export it. It then starts the controller Sandbox `openai-agents-api-webhook-controller` in `us-was-1` and prints its public webhook URL. Register that URL in your OpenAI project under Settings, Webhooks, for `agent.session.action_required` and `agent.session.failed`, export the signing secret as `OPENAI_WEBHOOK_SECRET`, and run the deploy again. Until the secret is configured the endpoint answers `503`.
 
+The Blaxel API key must be valid for the selected workspace. A working local `bl login` does not validate an exported `BL_API_KEY`. Use a durable API key for a long-lived controller; a temporary login token can expire while the controller is still running.
+
+### Test a separate deployment
+
+The default deployment reuses its controller and replaces the running process. To keep a review deployment separate, choose a unique prefix before its first deploy:
+
+```bash
+export OPENAI_WEBHOOK_RESOURCE_PREFIX='openai-review'
+export OPENAI_AGENT_NAME='openai-review'
+unset OPENAI_AGENT_ID OPENAI_WEBHOOK_SECRET
+./run.sh --deploy-webhook
+```
+
+This creates `openai-review-controller` and names its workers `openai-review-worker-<session-hash>`. Export the new agent ID, register this deployment's URL, and export its own signing secret before the second deploy. Keep the same prefix for both deployment and `--reconnect`. Leave the prefix unset to preserve the original controller and worker names.
+
 ### Prove reconnection with files preserved
 
 ```bash
@@ -177,7 +192,7 @@ deleted Blaxel sandbox
 
 Release compute deliberately: stop the executor process before deleting a worker, and send the next input only after OpenAI emits `session.environment.disconnected` (about five seconds later). Input sent while OpenAI still believes the executor is connected runs without file access and does not trigger the wake webhook.
 
-Workers live for `WORKER_TTL` (default `2h`) from creation; set it above your longest session. The controller Sandbox lives for `CONTROLLER_TTL` (default `24h`). Restarting its process keeps the SQLite queue; deleting or expiring the controller loses that local queue. When you are done, remove the OpenAI webhook, delete the controller and any remaining `openai-agents-api-worker-*` Sandboxes, and delete the API session.
+Workers live for `WORKER_TTL` (default `2h`) from creation; set it above your longest session. The controller Sandbox lives for `CONTROLLER_TTL` (default `24h`) from creation; redeploying its process does not renew that lifetime. Restarting its process keeps the SQLite queue; deleting or expiring the controller loses that local queue. When you are done, remove that deployment's OpenAI webhook, delete its controller and remaining workers, and delete its API sessions. Use the configured prefix to identify the deployment; preserve resources belonging to other deployments.
 
 ## If Agent Drive is not enabled
 
@@ -236,7 +251,7 @@ The Agents API is in beta and its server contract moves, so the cookbook tracks 
 | Codex executor | `@openai/codex@alpha` | `0.154.0-alpha.6` |
 | Sandbox lifetime | 15 minutes | same |
 
-The baseline, fresh-session handoff, parallel team, storage-only example, temporary-storage baseline and local-controller replacement proof passed with this combination. All 110 unit tests pass on Python 3.14 and a clean Python 3.11 install. The latter used locally signed deliveries based on real OpenAI required actions and verified real workers, disconnect events and Drive isolation. Deployment of these local changes and a new OpenAI-origin webhook delivery remain separate release checks.
+The baseline, fresh-session handoff, parallel team, storage-only example, temporary-storage baseline and local-controller replacement proof passed with this combination. All 113 unit tests pass on Python 3.14 and a clean Python 3.11 install. The latter used locally signed deliveries based on real OpenAI required actions and verified real workers, disconnect events and Drive isolation. A fresh checkout also passed isolated hosted deployment, signed redeployment and real OpenAI-origin webhook reconnection. Hosted tampered signatures returned 400, oversized bodies returned 413, and a correctly scoped existing worker adopted its session Drive. Temporary test resources were cleaned up; the existing long-lived deployment was preserved.
 
 The recipe submits input once to an idle session, waits up to 180 seconds for its new turn to complete (600 seconds for webhook-managed turns, including cold worker provisioning), and reads that turn's retained final answer. It rejects concurrent input and paginates retained items with a 1,000-item search bound and a 1 MiB answer limit. Live event-stream delivery is not required. Cleanup cancels unfinished work when OpenAI requires durable idle before deletion.
 

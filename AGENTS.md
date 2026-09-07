@@ -73,6 +73,7 @@ Required environment:
 - `BL_AGENT_DRIVE_NAME` optionally selects the reusable drive
 - `--deploy-webhook` additionally requires `BL_API_KEY` and `BL_WORKSPACE` for the controller; `OPENAI_AGENT_ID` is created on the first deploy and required afterwards; `OPENAI_WEBHOOK_SECRET` comes from the OpenAI webhook registration; `WORKER_TTL` (default `2h`) and `CONTROLLER_TTL` (default `24h`) are optional
 - `--reconnect` requires `OPENAI_AGENT_ID` and a deployed, registered controller
+- `OPENAI_WEBHOOK_RESOURCE_PREFIX` selects an isolated controller and worker namespace; keep it identical for deployment and reconnect. With no prefix, preserve the original resource names. `OPENAI_AGENT_NAME` optionally labels a new saved agent.
 
 Check presence without printing values. Never persist credentials.
 

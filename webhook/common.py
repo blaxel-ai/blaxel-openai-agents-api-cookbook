@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import time
 
 from blaxel.core import SandboxInstance
 from blaxel.core.sandbox import SandboxAPIError
 
-CONTROLLER_NAME = "openai-agents-api-webhook-controller"
+RESOURCE_PREFIX = os.environ.get("OPENAI_WEBHOOK_RESOURCE_PREFIX")
+CONTROLLER_NAME = (
+    f"{RESOURCE_PREFIX}-controller" if RESOURCE_PREFIX else "openai-agents-api-webhook-controller"
+)
 CONTROLLER_PORT = 8000
 CONTROLLER_PROCESS = "webhook-controller"
-WORKER_PREFIX = "openai-agents-api-worker"
+WORKER_PREFIX = f"{RESOURCE_PREFIX}-worker" if RESOURCE_PREFIX else "openai-agents-api-worker"
 SESSION_LABEL = "agents-session-id"
 EXECUTOR_PREFIX = "openai-agents-api-executor"
 WAKE_EVENT = "agent.session.action_required"

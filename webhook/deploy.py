@@ -37,12 +37,13 @@ CONTROLLER_REQUIREMENTS = (
 REQUIRED_ENV = ("OPENAI_API_KEY", "OPENAI_EXECUTOR_API_KEY", "BL_API_KEY", "BL_WORKSPACE")
 OPTIONAL_ENV = (
     "OPENAI_WEBHOOK_SECRET",
+    "OPENAI_WEBHOOK_RESOURCE_PREFIX",
     "CODEX_VERSION",
     "WORKER_TTL",
     "BL_AGENT_DRIVE_MODE",
     "BL_AGENT_DRIVE_NAME",
 )
-AGENT_NAME = "blaxel-openai-agents-api-cookbook"
+AGENT_NAME = os.environ.get("OPENAI_AGENT_NAME", "blaxel-openai-agents-api-cookbook")
 AGENT_INSTRUCTIONS = (
     "Work only inside /workspace/context. Read and write the files you are asked about "
     "directly, copy any requested markers exactly, and say so instead of guessing if file "
