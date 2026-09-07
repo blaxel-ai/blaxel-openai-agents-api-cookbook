@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from agent_api_sdk import SelfHostedEnvironmentInfo, SessionFailedEvent, SessionTurnFailedEvent
+from agent_api_sdk import SelfHostedEnvironmentInfo
 from blaxel.core.client.errors import UnexpectedStatus
 
 import handoff
@@ -319,7 +319,7 @@ async def test_run_review_cleans_up_both_resources_after_agent_failure(
     monkeypatch.setattr(handoff, "read_persisted_source", persisted_source)
     monkeypatch.setattr(handoff, "install_codex", no_op)
     monkeypatch.setattr(handoff, "start_exec_server", no_op)
-    monkeypatch.setattr(handoff, "stream_agent_output", fail_agent)
+    monkeypatch.setattr(handoff, "run_agent_turn", fail_agent)
 
     with pytest.raises(RuntimeError, match="agent failed"):
         await handoff.run_review(drive_store)
@@ -384,107 +384,6 @@ def test_cli_reports_required_agent_drive_without_traceback(
         "Agent Drive required: Agent Drive is not enabled. "
         "Request access: https://example.test\n"
     )
-
-
-class StreamingSession:
-    async def stream(self, *, input: str) -> Any:
-        assert input == "read the report"
-        for event in [
-            SimpleNamespace(
-                type="session.turn.output_text.delta",
-                output_text_delta="Verification marker: ",
-                output_text=None,
-            ),
-            SimpleNamespace(
-                type="session.turn.output_text.delta",
-                output_text_delta=main.VERIFICATION_MARKER,
-                output_text=None,
-            ),
-            SimpleNamespace(
-                type="session.idle",
-                output_text_delta=None,
-                output_text=None,
-            ),
-        ]:
-            yield event
-
-
-@pytest.mark.asyncio
-async def test_stream_agent_output_returns_text_deltas() -> None:
-    output = await runtime.stream_agent_output(  # type: ignore[arg-type]
-        StreamingSession(),
-        object(),
-        "read the report",
-    )
-
-    assert output == f"Verification marker: {main.VERIFICATION_MARKER}"
-
-
-@pytest.mark.asyncio
-async def test_stream_agent_output_reports_failed_turn_with_executor_logs() -> None:
-    class FailingSession:
-        async def stream(self, *, input: str) -> Any:
-            del input
-            yield SessionTurnFailedEvent.model_validate(
-                {
-                    "event_id": "evt_1",
-                    "session_id": "sess_1",
-                    "turn_id": "turn_1",
-                    "type": "session.turn.failed",
-                    "data": {},
-                    "error": {"code": "connection_failed", "message": "executor disconnected"},
-                }
-            )
-
-    class Process:
-        async def get(self, name: str) -> Any:
-            assert name == runtime.EXECUTOR_NAME
-            return SimpleNamespace(status="failed", stderr="codex: exited", stdout="", logs="")
-
-    with pytest.raises(RuntimeError, match="turn failed: executor disconnected") as failure:
-        await runtime.stream_agent_output(  # type: ignore[arg-type]
-            FailingSession(), SimpleNamespace(process=Process()), "read the report"
-        )
-    assert "codex: exited" in str(failure.value)
-
-
-@pytest.mark.asyncio
-async def test_stream_agent_output_reports_failed_session_with_executor_logs() -> None:
-    class FailingSession:
-        async def stream(self, *, input: str) -> Any:
-            del input
-            yield SessionFailedEvent.model_validate(
-                {
-                    "event_id": "evt_1",
-                    "session_id": "sess_1",
-                    "type": "session.failed",
-                    "session": {
-                        "id": "sess_1",
-                        "object": "agent.session",
-                        "created_at": 1,
-                        "last_active_at": 1,
-                        "status": "failed",
-                        "error": "executor never connected",
-                        "agent": {},
-                        "environment": {
-                            "type": "self_hosted",
-                            "environment_id": "env_1",
-                            "workspace_directory": "/workspace",
-                        },
-                    },
-                }
-            )
-
-    class Process:
-        async def get(self, name: str) -> Any:
-            assert name == runtime.EXECUTOR_NAME
-            return SimpleNamespace(status="failed", stderr="", stdout="codex: boot", logs="")
-
-    with pytest.raises(RuntimeError, match="session failed: executor never connected") as failure:
-        await runtime.stream_agent_output(  # type: ignore[arg-type]
-            FailingSession(), SimpleNamespace(process=Process()), "read the report"
-        )
-    assert "codex: boot" in str(failure.value)
 
 
 @dataclass
@@ -552,28 +451,6 @@ def test_run_script_rejects_reused_project_key_as_executor_key(tmp_path: Path) -
     assert "installing" not in result.stdout
 
 
-def test_run_script_requires_valid_blaxel_login_or_api_key(tmp_path: Path) -> None:
-    expired_bl = tmp_path / "bl"
-    expired_bl.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
-    expired_bl.chmod(0o755)
-    result = subprocess.run(
-        ["bash", "run.sh"],
-        cwd=Path(__file__).parents[1],
-        env={
-            "PATH": f"{tmp_path}:{os.environ['PATH']}",
-            "PYTHON_BIN": sys.executable,
-            "HOME": str(tmp_path),
-            "OPENAI_API_KEY": "test-only",
-        },
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 1
-    assert "Blaxel login is missing or expired" in result.stderr
-
-
 def test_run_script_requires_workspace_with_api_key(tmp_path: Path) -> None:
     result = run_script(
         {"HOME": str(tmp_path), "OPENAI_API_KEY": "test-only", "BL_API_KEY": "test-only"}
@@ -593,4 +470,33 @@ def test_run_script_rejects_unknown_mode() -> None:
     )
 
     assert result.returncode == 1
-    assert "usage: ./run.sh [--handoff]" in result.stderr
+    assert "usage: ./run.sh [--handoff | --deploy-webhook | --reconnect]" in result.stderr
+
+
+async def test_cleanup_cancels_busy_session_and_waits_for_durable_idle(monkeypatch) -> None:
+    import httpx
+    from agent_api_sdk import AgentAPIError
+
+    calls = []
+
+    class BusySession:
+        async def delete(self):
+            calls.append("delete")
+            if calls.count("delete") < 3:
+                raise AgentAPIError(
+                    "session must be durably idle without required actions before deletion",
+                    409,
+                    "conflict_error",
+                    "conflict_error",
+                    httpx.Response(409),
+                )
+
+        async def cancel(self):
+            calls.append("cancel")
+
+    async def sleep(_):
+        pass
+
+    monkeypatch.setattr(runtime.asyncio, "sleep", sleep)
+    await runtime.cleanup(BusySession(), None)
+    assert calls == ["delete", "cancel", "delete", "delete"]

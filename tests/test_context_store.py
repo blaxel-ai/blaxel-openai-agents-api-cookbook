@@ -249,3 +249,19 @@ async def test_mount_context_store_uses_scoped_drive_path() -> None:
             "drive_path": "/openai-agents-api-cookbook",
         }
     ]
+
+
+def test_webhook_scopes_have_distinct_drive_permissions() -> None:
+    from context_store import context_scope, drive_configuration, sandbox_labels
+
+    first, second = context_scope("sess_1"), context_scope("sess_2")
+    assert first == context_scope("sess_1") and first != second
+    for scope in (first, second):
+        config = drive_configuration("session-drive", scope)
+        assert config["permissions"][0]["labels"] == {
+            "agents-api-context": sandbox_labels(scope)["agents-api-context"]
+        }
+    assert (
+        drive_configuration("a", first)["permissions"]
+        != drive_configuration("b", second)["permissions"]
+    )

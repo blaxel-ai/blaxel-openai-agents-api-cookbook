@@ -27,8 +27,8 @@ from runtime import (
     install_codex,
     resolve_blaxel_workspace,
     resolve_openai_keys,
+    run_agent_turn,
     start_exec_server,
-    stream_agent_output,
 )
 
 VERIFICATION_MARKER = "BLAXEL_AGENT_FILE_7C4E91"
@@ -81,7 +81,7 @@ async def run_report(
             await start_exec_server(sandbox, executor_api_key, environment_id_of(session))
 
             print("\nagent output:\n")
-            agent_output = await stream_agent_output(
+            agent_output = await run_agent_turn(
                 session,
                 sandbox,
                 (
@@ -120,6 +120,7 @@ async def create_sandbox(
     region: str,
     *,
     prefix: str = "openai-agents-api",
+    scope: str | None = None,
 ) -> SandboxInstance:
     name = f"{prefix}-{uuid.uuid4().hex[:8]}"
     sandbox = await SandboxInstance.create(
@@ -129,7 +130,7 @@ async def create_sandbox(
             "memory": 2048,
             "region": region,
             "ttl": "15m",
-            "labels": sandbox_labels(),
+            "labels": sandbox_labels(scope),
         }
     )
     print(f"started Blaxel sandbox {name}")

@@ -29,8 +29,8 @@ from runtime import (
     environment_id_of,
     install_codex,
     resolve_openai_keys,
+    run_agent_turn,
     start_exec_server,
-    stream_agent_output,
 )
 
 HANDOFF_MARKER = "BLAXEL_AGENT_HANDOFF_58D2AF"
@@ -96,7 +96,7 @@ async def run_review(store: ContextStore) -> int:
             await start_exec_server(sandbox, executor_api_key, environment_id_of(session))
 
             print("\nhandoff agent output:\n")
-            agent_output = await stream_agent_output(
+            agent_output = await run_agent_turn(
                 session,
                 sandbox,
                 (

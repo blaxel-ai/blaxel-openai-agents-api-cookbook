@@ -1,22 +1,14 @@
-"""Credentials, Codex executor, event streaming, diagnostics, and cleanup helpers."""
+"""Credentials, Codex executor, durable turn completion, diagnostics, and cleanup helpers."""
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shlex
 import sys
 import time
 
-from agent_api_sdk import (
-    AsyncAgentSession,
-    SelfHostedEnvironmentInfo,
-    SessionEnvironmentConnectedEvent,
-    SessionEnvironmentFailedEvent,
-    SessionEvent,
-    SessionFailedEvent,
-    SessionTurnCancelledEvent,
-    SessionTurnFailedEvent,
-)
+from agent_api_sdk import AgentAPIError, AsyncAgentSession, SelfHostedEnvironmentInfo
 from blaxel.core import SandboxInstance, settings
 from blaxel.core.authentication import MissingCredentials
 
@@ -27,7 +19,9 @@ CODEX_VERSION = os.environ.get("CODEX_VERSION", "alpha")
 CODEX_INSTALL_TIMEOUT_SECONDS = 180
 EXECUTOR_KEY_HELP = (
     "Create a restricted API key in the same OpenAI project and owner as OPENAI_API_KEY "
-    "with only 'List models: Read' enabled, then export it as OPENAI_EXECUTOR_API_KEY."
+    "with api.agents.environments.connect when strict executor permissions are enabled. "
+    "List models: Read alone is insufficient under strict enforcement. Ask your OpenAI "
+    "representative if this permission is unavailable, then export OPENAI_EXECUTOR_API_KEY."
 )
 
 
@@ -48,6 +42,8 @@ def resolve_openai_keys() -> tuple[str, str]:
     api_key = required_env("OPENAI_API_KEY")
     executor_key = os.environ.get("OPENAI_EXECUTOR_API_KEY")
     if executor_key:
+        if executor_key == api_key:
+            raise RuntimeError("OPENAI_EXECUTOR_API_KEY must be a separate restricted key")
         return api_key, executor_key
     if not _fallback_warned:
         _fallback_warned.append(True)
@@ -67,8 +63,7 @@ def resolve_blaxel_workspace() -> str:
     workspace = os.environ.get("BL_WORKSPACE") or blaxel_login_workspace()
     if not workspace or blaxel_credentials_missing():
         raise RuntimeError(
-            "Blaxel credentials are required: run `bl login`, "
-            "or export BL_WORKSPACE and BL_API_KEY"
+            "Blaxel credentials are required: run `bl login`, or export BL_WORKSPACE and BL_API_KEY"
         )
     return workspace
 
@@ -86,7 +81,10 @@ async def install_codex(sandbox: SandboxInstance) -> None:
     install = await sandbox.process.exec(
         {
             "name": "install-codex",
-            "command": f"npm install --global @openai/codex@{CODEX_VERSION} && codex --version",
+            "command": (
+                f"npm install --global @openai/codex@{shlex.quote(CODEX_VERSION)} "
+                "&& codex --version"
+            ),
             "working_dir": "/tmp",
             "wait_for_completion": True,
             "timeout": CODEX_INSTALL_TIMEOUT_SECONDS,
@@ -140,52 +138,97 @@ def exec_server_command(environment_id: str) -> list[str]:
     ]
 
 
-async def stream_agent_output(
+TURN_TIMEOUT_SECONDS = 180
+MAX_OUTPUT_BYTES = 1024 * 1024
+MAX_ITEM_PAGES = 20
+
+
+async def run_agent_turn(
     session: AsyncAgentSession,
-    sandbox: SandboxInstance,
+    sandbox: SandboxInstance | None,
     prompt: str,
+    *,
+    timeout_seconds: float = TURN_TIMEOUT_SECONDS,
 ) -> str:
-    saw_text_delta = False
-    connected = False
-    output_parts: list[str] = []
-    async for event in session.stream(input=prompt):
-        if isinstance(event, SessionEnvironmentConnectedEvent) and not connected:
-            connected = True
-            print("environment connected")
-        if isinstance(event, SessionEnvironmentFailedEvent):
-            await raise_with_executor_diagnostics(
-                sandbox,
-                f"environment failed: {event.environment.error}",
-            )
-        if isinstance(event, SessionTurnFailedEvent):
-            error = event.error.message if event.error is not None else "unknown error"
-            await raise_with_executor_diagnostics(sandbox, f"turn failed: {error}")
-        if isinstance(event, SessionTurnCancelledEvent):
-            await raise_with_executor_diagnostics(sandbox, "turn was cancelled")
-        if isinstance(event, SessionFailedEvent):
-            error = getattr(event.session, "error", None) or "unknown error"
-            await raise_with_executor_diagnostics(sandbox, f"session failed: {error}")
-        saw_text_delta, output_text = print_event(event, saw_text_delta)
-        if output_text:
-            output_parts.append(output_text)
-    print()
-    return "".join(output_parts)
+    """Submit once to an idle session and verify its new turn through durable state.
+
+    The cookbook owns input to this session. Concurrent input is rejected rather than
+    attributing another caller's answer to this task. Live SSE events are not required.
+    """
+    async with asyncio.timeout(timeout_seconds):
+        info = await session.retrieve()
+        if info.status != "idle":
+            raise RuntimeError("Expected an idle session before submitting a new task")
+        previous = await session.list_turns(limit=1, order="desc")
+        previous_id = previous.data[0].id if previous.data else None
+        await session.input(prompt)
+        turn_id = None
+        while True:
+            turns = await session.list_turns(limit=2, order="desc")
+            new_turns = []
+            for turn in turns.data:
+                if turn.id == previous_id:
+                    break
+                new_turns.append(turn)
+            if len(new_turns) > 1 or (turns.has_more and previous_id is None):
+                raise RuntimeError("Concurrent input: expected exactly one new turn")
+            # The SDK also refreshes session.status, inspected by the CLI callers.
+            info = await session.retrieve()
+            if info.status == "failed":
+                await raise_with_executor_diagnostics(sandbox, "OpenAI session failed")
+            if new_turns:
+                turn = new_turns[0]
+                if turn_id is not None and turn.id != turn_id:
+                    raise RuntimeError("Concurrent input changed the task being verified")
+                turn_id = turn.id
+                if turn.status in {"failed", "cancelled"}:
+                    await raise_with_executor_diagnostics(
+                        sandbox, f"turn {turn.status}: {turn.error}"
+                    )
+                if turn.status == "completed" and info.status == "idle":
+                    output = await completed_turn_output(session, turn_id)
+                    print(output, flush=True)
+                    return output
+            await asyncio.sleep(1)
 
 
-def print_event(event: SessionEvent, saw_text_delta: bool) -> tuple[bool, str]:
-    if event.output_text_delta is not None:
-        print(event.output_text_delta, end="", flush=True)
-        return True, event.output_text_delta
-    if event.output_text is not None and not saw_text_delta:
-        print(event.output_text)
-        return saw_text_delta, event.output_text
-    return saw_text_delta, ""
+async def completed_turn_output(session: AsyncAgentSession, turn_id: str) -> str:
+    """Find this turn's saved final answer with bounded, paginated reads."""
+    after = None
+    for _ in range(MAX_ITEM_PAGES):
+        items = await session.list_items(limit=50, order="desc", after=after)
+        for item in items.data:
+            if (
+                item.get("turn_id") == turn_id
+                and (item.get("role") == "assistant" or item.get("type") == "agent_message")
+                and item.get("status") == "completed"
+                and item.get("phase") == "final_answer"
+            ):
+                parts = [
+                    part["text"]
+                    for part in item.get("content", [])
+                    if part.get("type") == "output_text"
+                ]
+                if sum(len(part.encode()) for part in parts) > MAX_OUTPUT_BYTES:
+                    raise RuntimeError("Final answer exceeds the cookbook's 1 MiB limit")
+                output = "".join(parts)
+                if not output.strip():
+                    raise RuntimeError("Completed turn has an empty final answer")
+                return output
+        if not items.has_more:
+            break
+        if not items.after or items.after == after:
+            raise RuntimeError("Retained item pagination did not advance")
+        after = items.after
+    raise RuntimeError("Completed turn has no final answer within the latest 1,000 items")
 
 
 async def raise_with_executor_diagnostics(
-    sandbox: SandboxInstance,
+    sandbox: SandboxInstance | None,
     message: str,
 ) -> None:
+    if sandbox is None:
+        raise RuntimeError(f"{message}\nexecutor logs live on the webhook handler's worker")
     process = await sandbox.process.get(EXECUTOR_NAME)
     status = getattr(process.status, "value", str(process.status))
     logs = process.stderr or process.stdout or process.logs or "(no executor output)"
@@ -199,7 +242,7 @@ async def cleanup(
     errors: list[Exception] = []
     if session is not None:
         try:
-            await session.delete()
+            await delete_session(session)
             print("deleted OpenAI session")
         except Exception as error:
             errors.append(error)
@@ -215,3 +258,22 @@ async def cleanup(
 
     if errors:
         raise ExceptionGroup("cookbook cleanup failed", errors)
+
+
+async def delete_session(session: AsyncAgentSession) -> None:
+    """Cancel unfinished work when OpenAI requires a durably idle session to delete."""
+    async with asyncio.timeout(30):
+        cancelled = False
+        while True:
+            try:
+                await session.delete()
+                return
+            except AgentAPIError as error:
+                if error.status_code == 404:
+                    return
+                if error.status_code != 409 or "durably idle" not in error.message:
+                    raise
+                if not cancelled:
+                    await session.cancel()
+                    cancelled = True
+                await asyncio.sleep(1)
