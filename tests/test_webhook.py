@@ -4,7 +4,10 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -66,6 +69,32 @@ def test_worker_name_is_deterministic_and_valid() -> None:
     assert name == common.worker_name("sess_abc")
     assert name != common.worker_name("sess_abd")
     assert RESOURCE_NAME.fullmatch(name)
+
+
+@pytest.mark.parametrize("prefix", [None, "", "isolated-review"])
+def test_deployment_names_preserve_defaults_and_agree_across_entrypoints(prefix):
+    env = os.environ.copy()
+    env.pop("OPENAI_WEBHOOK_RESOURCE_PREFIX", None)
+    if prefix is not None:
+        env["OPENAI_WEBHOOK_RESOURCE_PREFIX"] = prefix
+    output = subprocess.check_output(
+        [
+            sys.executable,
+            "-c",
+            "import json; from webhook import common, deploy, handler, reconnect; "
+            "print(json.dumps([deploy.CONTROLLER_NAME, "
+            "common.worker_name('sess_abc'), handler.worker_name('sess_abc'), "
+            "reconnect.worker_name('sess_abc')]))",
+        ],
+        env=env,
+        text=True,
+    )
+    controller, *workers = json.loads(output)
+    assert controller == (
+        f"{prefix}-controller" if prefix else "openai-agents-api-webhook-controller"
+    )
+    expected_prefix = f"{prefix}-worker" if prefix else "openai-agents-api-worker"
+    assert workers == [f"{expected_prefix}-{hashlib.sha256(b'sess_abc').hexdigest()[:16]}"] * 3
 
 
 def test_session_to_wake_selects_only_connection_and_failure_events() -> None:
@@ -417,9 +446,11 @@ def test_controller_environment_defaults_region_and_passes_optional(
     for name in deploy.OPTIONAL_ENV + ("BL_REGION",):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("WORKER_TTL", "3h")
+    monkeypatch.setenv("OPENAI_WEBHOOK_RESOURCE_PREFIX", "isolated-review")
     values = deploy.controller_environment()
     assert values["BL_REGION"] == "us-was-1"
     assert values["WORKER_TTL"] == "3h"
+    assert values["OPENAI_WEBHOOK_RESOURCE_PREFIX"] == "isolated-review"
     assert "OPENAI_WEBHOOK_SECRET" not in values
 
 
