@@ -1,122 +1,192 @@
-"""Parallel OpenAI specialists share files through Agent Drive; a coordinator combines them.
+"""Parallel OpenAI specialists share verified files through Agent Drive."""
 
-Run from the configured cookbook: .venv/bin/python -m examples.openai_agent_drive
-"""
+from __future__ import annotations
 
 import asyncio
+import os
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from agent_api_sdk import AgentAPISDK, AsyncAgentSession
 from blaxel.core import SandboxInstance
 from blaxel.core.drive import DriveInstance
+from openai import AsyncOpenAI
 
-from context_store import sandbox_labels
-from main import EXAMPLE_DIR, create_sandbox
+from context_store import AGENT_DRIVE_REGION, sandbox_labels
+from run_receipt import RunReceipt
 from runtime import (
     cleanup,
-    environment_id_of,
+    connect_executor,
     install_codex,
+    openai_client,
     resolve_blaxel_workspace,
     resolve_openai_keys,
-    start_exec_server,
+    run_agent_turn,
+    sandbox_name,
 )
 
+DEFAULT_MODEL = "gpt-5.6-sol"
+SAMPLE_REPORT = Path(__file__).resolve().parent.parent / "sample_report.txt"
+ENGINEERING_EVIDENCE = ("42", "30", "Maya", "Tuesday", "idempotency")
+SUPPORT_EVIDENCE = ("12", "Theo", "Wednesday", "expired")
+PLAN_HEADINGS = ("# Coordinated plan", "## Engineering", "## Support", "## Source evidence")
 
-async def demonstrate(drive: DriveInstance, report: str) -> None:
+
+async def create_team_sandbox(scope: str) -> SandboxInstance:
+    name = f"openai-agent-team-{uuid.uuid4().hex[:8]}"
+    return await SandboxInstance.create(
+        {
+            "name": name,
+            "image": "blaxel/node:latest",
+            "memory": 2048,
+            "region": AGENT_DRIVE_REGION,
+            "ttl": "15m",
+            "labels": sandbox_labels(scope),
+        }
+    )
+
+
+def verify_specialist(filename: str, contents: str, marker: str) -> None:
+    required = ENGINEERING_EVIDENCE if filename == "engineering.md" else SUPPORT_EVIDENCE
+    missing = [value for value in (*required, marker) if value.lower() not in contents.lower()]
+    if missing:
+        raise RuntimeError(f"{filename} is missing source evidence: {', '.join(missing)}")
+
+
+def verify_plan(contents: str, marker: str) -> None:
+    required = (
+        *PLAN_HEADINGS,
+        "engineering.md",
+        "support.md",
+        marker,
+        *ENGINEERING_EVIDENCE,
+        *SUPPORT_EVIDENCE,
+    )
+    missing = [value for value in required if value.lower() not in contents.lower()]
+    if missing:
+        raise RuntimeError(f"plan.md does not satisfy the coordinator schema: {', '.join(missing)}")
+
+
+async def demonstrate(drive: DriveInstance, report: str, marker: str) -> None:
     async def specialist(task: str, output: str) -> None:
-        async with openai_computer(drive.name) as (agent, computer):
+        async with openai_computer(drive.name) as (client, session_id, computer):
             await computer.drives.mount(drive_name=drive.name, mount_path="/workspace/context")
-            await agent.input(f"Read report.txt. {task} Write your findings to {output}.")
-            await wait_for_file(agent, computer, output)
+            await run_agent_turn(
+                client,
+                session_id,
+                computer,
+                f"Read report.txt. {task} Preserve the relevant source counts, owner, deadline, "
+                f"cause, and exact run marker in grounded findings in {output}.",
+            )
+            contents = await read_nonempty_file(computer, output)
+            verify_specialist(output, contents, marker)
 
-    async with openai_computer(drive.name) as (coordinator, computer):
+    async with openai_computer(drive.name) as (client, session_id, computer):
         await computer.drives.mount(drive_name=drive.name, mount_path="/workspace/context")
         await computer.fs.write("/workspace/context/report.txt", report)
 
-        # Specialists work in parallel, each writing its own file.
         async with asyncio.TaskGroup() as team:
             team.create_task(specialist("Plan the billing retry fix.", "engineering.md"))
             team.create_task(specialist("Plan the customer outreach.", "support.md"))
 
-        # Their computers are gone. The coordinator reads their work from Agent Drive.
-        await coordinator.input(
-            "Read engineering.md and support.md. Combine them into plan.md "
-            "with owners, deadlines and source filenames."
+        await run_agent_turn(
+            client,
+            session_id,
+            computer,
+            "Read engineering.md and support.md and write plan.md. Use exactly these headings: "
+            "# Coordinated plan, ## Engineering, ## Support, ## Source evidence. Include owners "
+            "and deadlines, and preserve each specialist's source counts and causal details. "
+            "Under Source evidence, cite engineering.md and support.md and preserve "
+            "the exact TEAM_SOURCE_ run marker found in both files. Do not substitute any "
+            "other verification marker.",
         )
-        print(await wait_for_file(coordinator, computer, "plan.md"))
+        plan = await read_nonempty_file(computer, "plan.md")
+        verify_plan(plan, marker)
+        print(plan)
 
 
 @asynccontextmanager
-async def openai_computer(scope: str) -> AsyncIterator[tuple[AsyncAgentSession, SandboxInstance]]:
-    """Connect a fresh OpenAI session to Blaxel; delete both on exit, even on failure."""
+async def openai_computer(
+    scope: str,
+) -> AsyncIterator[tuple[AsyncOpenAI, str, SandboxInstance]]:
+    """Connect a fresh public Agents API session and clean up its exact resources."""
     api_key, executor_key = resolve_openai_keys()
-    async with AgentAPISDK(api_key=api_key) as client:
-        session = None
-        computer = await create_sandbox("us-was-1", scope=scope)
+    client = openai_client(api_key)
+    session_id: str | None = None
+    receipt = RunReceipt.create(uuid.uuid4().hex[:12], "parallel-team-worker")
+    computer: SandboxInstance | None = None
+    primary_error: BaseException | None = None
+    try:
+        computer = await create_team_sandbox(scope)
+        receipt.record("blaxel_sandbox", sandbox_name(computer), ownership="created")
+        await computer.fs.mkdir("/workspace/context")
+        await install_codex(computer)
+        session = await client.beta.agents.sessions.create(
+            agent={
+                "model": os.environ.get("OPENAI_MODEL", DEFAULT_MODEL),
+                "instructions": (
+                    "Work in /workspace/context. Read requested files directly. Separate confirmed "
+                    "facts from recommendations. Preserve source verification markers in output."
+                ),
+            },
+            environment={"type": "self_hosted", "workspace_directory": "/workspace/context"},
+        )
+        session_id = session.id
+        receipt.record("openai_session", session_id, ownership="created")
+        await connect_executor(client, session, computer, executor_key)
+        yield client, session_id, computer
+    except BaseException as error:
+        primary_error = error
+    finally:
+        cleanup_errors: list[BaseException] = []
         try:
-            await computer.fs.mkdir("/workspace/context")
-            await install_codex(computer)
-            session = await client.sessions.create(
-                agent={
-                    "model": "gpt-5.6-sol",
-                    "instructions": (
-                        "Work in /workspace/context. Read the requested files directly. "
-                        "Separate confirmed facts from recommendations. A count of billing "
-                        "attempts does not establish the number of unique customers. "
-                        "Preserve any verification marker from the source in your output file."
-                    ),
-                },
-                environment={"type": "self_hosted", "workspace_directory": "/workspace/context"},
-            )
-            await start_exec_server(computer, executor_key, environment_id_of(session))
-            yield session, computer
-        finally:
-            await cleanup(session, computer)
+            await cleanup(client, session_id, computer, receipt=receipt)
+        except BaseException as error:
+            cleanup_errors.append(error)
+        try:
+            await client.close()
+        except BaseException as error:
+            cleanup_errors.append(error)
+        if cleanup_errors:
+            if primary_error is not None:
+                primary_error.add_note(
+                    "team worker cleanup failed: "
+                    + "; ".join(str(error) for error in cleanup_errors)
+                )
+            else:
+                raise BaseExceptionGroup("team worker cleanup failed", cleanup_errors)
+    if primary_error is not None:
+        raise primary_error
 
 
-async def wait_for_file(
-    agent: AsyncAgentSession, computer: SandboxInstance, filename: str
-) -> str:
-    """Verify this fresh session's sole turn completed, then read its nonempty file.
-
-    Poll durable state instead of relying on a live event stream. Never resend input.
-    This example deliberately submits exactly one task to each new session.
-    """
-    async with asyncio.timeout(180):
-        while True:
-            turns = await agent.list_turns(limit=2, order="desc")
-            session = await agent.retrieve()
-            if turns.has_more or len(turns.data) > 1:
-                raise RuntimeError("Expected exactly one task in this fresh session.")
-            if session.status == "failed":
-                raise RuntimeError("The OpenAI session failed.")
-            if turns.data:
-                turn = turns.data[0]
-                if turn.status in {"failed", "cancelled"}:
-                    raise RuntimeError(f"The OpenAI task {turn.status}: {turn.error}")
-                if turn.status == "completed" and session.status == "idle":
-                    contents = await computer.fs.read(f"/workspace/context/{filename}")
-                    if not contents.strip():
-                        raise RuntimeError(f"The agent wrote an empty file: {filename}")
-                    return contents
-            await asyncio.sleep(1)
+async def read_nonempty_file(computer: SandboxInstance, filename: str) -> str:
+    contents = await computer.fs.read(f"/workspace/context/{filename}")
+    if not contents.strip():
+        raise RuntimeError(f"The agent wrote an empty file: {filename}")
+    return contents
 
 
 async def main() -> None:
     resolve_openai_keys()
     resolve_blaxel_workspace()
+    region = os.environ.get("BL_REGION", AGENT_DRIVE_REGION)
+    if region != AGENT_DRIVE_REGION:
+        raise RuntimeError(f"The team example requires Agent Drive region {AGENT_DRIVE_REGION}")
     scope = f"openai-agent-team-{uuid.uuid4().hex[:10]}"
+    marker = f"TEAM_SOURCE_{uuid.uuid4().hex.upper()}"
+    report = f"{SAMPLE_REPORT.read_text(encoding='utf-8').rstrip()}\n\nRun marker: {marker}\n"
+    receipt = RunReceipt.create(scope, "parallel-team")
     drive = await DriveInstance.create(
         {
             "name": scope,
-            "region": "us-was-1",
+            "region": region,
             "permissions": [{"labels": sandbox_labels(scope), "mode": "read-write", "path": "/"}],
         }
     )
+    receipt.record("agent_drive", drive.name, ownership="created", state="retained")
     print(f"Retained Agent Drive: {drive.name}", flush=True)
-    await demonstrate(drive, (EXAMPLE_DIR / "sample_report.txt").read_text())
+    await demonstrate(drive, report, marker)
 
 
 if __name__ == "__main__":

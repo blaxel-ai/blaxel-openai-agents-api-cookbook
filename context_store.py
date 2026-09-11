@@ -6,12 +6,16 @@ import hashlib
 import os
 import re
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import quote
 
 from blaxel.core.client.errors import UnexpectedStatus
 from blaxel.core.drive import DriveAPIError, DriveInstance
+
+from resource_records import ALLOCATION_REJECTION_STATUSES
+from resource_target import DEPLOYMENT_LABEL, resource_labels
 
 AGENT_DRIVE_REGION = "us-was-1"
 DEFAULT_DRIVE_NAME = "openai-agents-api-context"
@@ -33,6 +37,7 @@ class ContextStore:
     access_url: str
     drive: DriveInstance | None = None
     reason: str | None = None
+    drive_ownership: Literal["created", "reused"] | None = None
 
     @property
     def run_path(self) -> str:
@@ -131,6 +136,10 @@ async def resolve_context_store(
     mode: AgentDriveMode | None = None,
     run_id: str | None = None,
     scope: str | None = None,
+    deployment_id: str | None = None,
+    on_drive_allocation_intent: Callable[[str], None] | None = None,
+    on_drive_allocation_rejected: Callable[[str], None] | None = None,
+    on_drive_resolved: Callable[[str, Literal["created", "reused"]], None] | None = None,
 ) -> ContextStore:
     resolved_mode = mode or requested_agent_drive_mode()
     resolved_run_id = run_id or uuid.uuid4().hex[:10]
@@ -159,7 +168,16 @@ async def resolve_context_store(
     if scope is not None:
         name = f"{name[:24]}-{scope}"
     try:
-        drive = await DriveInstance.create_if_not_exists(drive_configuration(name, scope))
+        configuration = drive_configuration(name, scope)
+        if deployment_id is not None:
+            configuration["labels"] = {DEPLOYMENT_LABEL: deployment_id}
+        drive, ownership = await ensure_drive(
+            configuration,
+            on_allocation_intent=on_drive_allocation_intent,
+            on_allocation_rejected=on_drive_allocation_rejected,
+        )
+        if on_drive_resolved is not None:
+            on_drive_resolved(drive.name, ownership)
     except (DriveAPIError, UnexpectedStatus) as error:
         if not is_agent_drive_access_error(error):
             raise
@@ -181,7 +199,40 @@ async def resolve_context_store(
         run_id=resolved_run_id,
         access_url=access_url,
         drive=drive,
+        drive_ownership=ownership,
     )
+
+
+async def ensure_drive(
+    config: dict[str, object],
+    *,
+    on_allocation_intent: Callable[[str], None] | None = None,
+    on_allocation_rejected: Callable[[str], None] | None = None,
+) -> tuple[DriveInstance, Literal["created", "reused"]]:
+    """Keep creation ownership explicit, including another caller winning the race."""
+    name = str(config["name"])
+    try:
+        drive = await DriveInstance.get(name)
+    except (DriveAPIError, UnexpectedStatus) as error:
+        if error.status_code != 404:
+            raise
+        if on_allocation_intent is not None:
+            on_allocation_intent(name)
+        try:
+            return await DriveInstance.create(config), "created"
+        except (DriveAPIError, UnexpectedStatus) as create_error:
+            if (
+                create_error.status_code in ALLOCATION_REJECTION_STATUSES
+                and on_allocation_rejected is not None
+            ):
+                on_allocation_rejected(name)
+            if create_error.status_code != 409:
+                raise
+            drive = await DriveInstance.get(name)
+    labels = config.get("labels")
+    deployment_id = labels.get(DEPLOYMENT_LABEL) if isinstance(labels, dict) else None
+    owned = deployment_id and resource_labels(drive).get(DEPLOYMENT_LABEL) == deployment_id
+    return drive, "created" if owned else "reused"
 
 
 def is_agent_drive_access_error(error: DriveAPIError | UnexpectedStatus) -> bool:

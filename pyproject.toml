@@ -9,7 +9,7 @@ description = "Give OpenAI-hosted agents an isolated Blaxel computer with option
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
 dependencies = [
-  "agent-api-sdk @ git+https://github.com/OpenAI-Early-Access/agents-api-python-preview.git@main",
+  "openai>=3.13.0,<4",
   "blaxel>=0.4.7,<0.5",
 ]
 
@@ -23,7 +23,17 @@ dev = [
 ]
 
 [tool.setuptools]
-py-modules = ["context_store", "handoff", "main", "runtime"]
+py-modules = [
+  "cleanup_run",
+  "context_store",
+  "handoff",
+  "local_output",
+  "main",
+  "resource_records",
+  "resource_target",
+  "run_receipt",
+  "runtime",
+]
 packages = ["webhook"]
 
 [tool.pytest.ini_options]

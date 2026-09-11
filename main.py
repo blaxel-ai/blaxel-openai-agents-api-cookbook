@@ -7,9 +7,9 @@ import os
 import shlex
 import sys
 import uuid
+from importlib.metadata import version
 from pathlib import Path
 
-from agent_api_sdk import AgentAPISDK, AsyncAgentSession
 from blaxel.core import SandboxInstance
 
 from context_store import (
@@ -20,18 +20,23 @@ from context_store import (
     resolve_context_store,
     sandbox_labels,
 )
+from local_output import save_verified_output
+from run_receipt import RunReceipt
 from runtime import (
     WORKSPACE,
     cleanup,
-    environment_id_of,
+    connect_executor,
+    environment_details,
     install_codex,
+    openai_client,
+    resolve_blaxel_base_url,
     resolve_blaxel_workspace,
     resolve_openai_keys,
     run_agent_turn,
-    start_exec_server,
+    sandbox_name,
 )
 
-VERIFICATION_MARKER = "BLAXEL_AGENT_FILE_7C4E91"
+VERIFICATION_MARKER = "BLAXEL_AGENT_RUN"
 DEFAULT_MODEL = "gpt-5.6-sol"
 DEFAULT_REGION = "us-was-1"
 EXAMPLE_DIR = Path(__file__).resolve().parent
@@ -45,24 +50,57 @@ async def run_report(
     workspace = resolve_blaxel_workspace()
     model = os.environ.get("OPENAI_MODEL", DEFAULT_MODEL)
     region = os.environ.get("BL_REGION", DEFAULT_REGION)
-    session: AsyncAgentSession | None = None
+    session_id: str | None = None
     sandbox: SandboxInstance | None = None
+    run_id = uuid.uuid4().hex[:10]
+    receipt = RunReceipt.create(run_id, "baseline")
+    receipt.target = {
+        "blaxel_workspace": workspace,
+        "blaxel_region": region,
+        "openai_base_url": "https://api.openai.com/v1",
+        "blaxel_base_url": resolve_blaxel_base_url(),
+        "model": model,
+    }
+    receipt.versions = {
+        "openai": version("openai"),
+        "blaxel": version("blaxel"),
+        "codex_requested": os.environ.get("OPENAI_EXECUTOR_VERSION", "alpha"),
+    }
+    receipt.save()
+    receipt.record(
+        "execution_target",
+        f"{workspace}/{region}",
+        ownership="selected",
+        state="configured",
+        detail="OpenAI public Agents API; public openai Python SDK",
+    )
     store = await resolve_context_store(
         workspace=workspace,
         region=region,
         mode=drive_mode,
+        run_id=run_id,
+        on_drive_resolved=lambda drive_name, ownership: receipt.record(
+            "agent_drive",
+            drive_name,
+            ownership=ownership,
+            state="retained",
+        ),
     )
     print(f"Blaxel workspace: {workspace} ({region})")
     print_context_store(store)
+    marker = f"{VERIFICATION_MARKER}_{uuid.uuid4().hex.upper()}"
 
-    async with AgentAPISDK(api_key=api_key) as client:
+    async with openai_client(api_key) as client:
         try:
             sandbox = await create_sandbox(region)
+            receipt.record("blaxel_sandbox", sandbox_name(sandbox), ownership="created")
             await mount_context_store(sandbox, store)
-            await prepare_context(sandbox, store)
-            await install_codex(sandbox)
+            await prepare_context(sandbox, store, marker=marker)
+            codex_version = await install_codex(sandbox)
+            receipt.versions["codex_actual"] = codex_version
+            receipt.save()
 
-            session = await client.sessions.create(
+            session = await client.beta.agents.sessions.create(
                 agent={
                     "model": model,
                     "instructions": (
@@ -77,30 +115,36 @@ async def run_report(
                     "workspace_directory": WORKSPACE,
                 },
             )
+            session_id = session.id
+            receipt.record("openai_session", session_id, ownership="created")
             print(f"created OpenAI session {session.id}")
-            await start_exec_server(sandbox, executor_api_key, environment_id_of(session))
+            environment_id, _remote_url = environment_details(session)
+            receipt.record("openai_environment", environment_id, ownership="created")
+            await connect_executor(client, session, sandbox, executor_api_key)
 
             print("\nagent output:\n")
             agent_output = await run_agent_turn(
-                session,
+                client,
+                session_id,
                 sandbox,
                 (
                     f"Read {store.input_path}. Write a concise report to {store.output_path}. "
                     "Name the source path, summarize the main ideas, state one caveat, and "
-                    "include the exact verification marker from the source. Then respond with "
+                    "include the exact run verification marker from the source. Then respond with "
                     "the marker and output path."
                 ),
             )
 
-            # session.stream() returns only after the session.idle or session.failed
-            # event. Use that event-derived status instead of an immediate GET, which
-            # can briefly return the previous in_progress state.
-            print(f"\nfinal status: {session.status}")
-            if session.status != "idle":
+            # Durable polling returned only after the new turn completed and the
+            # session became idle. Re-read it for the user-facing lifecycle receipt.
+            final_session = await client.beta.agents.sessions.retrieve(session_id)
+            print(f"\nfinal status: {final_session.status}")
+            if final_session.status != "idle":
                 return 2, store
             summary = await sandbox.fs.read(store.output_path)
-            verify_result(agent_output, summary, store)
+            verify_result(agent_output, summary, store, marker=marker)
             print(f"confirmed generated file {store.output_path}")
+            save_verified_output(store.run_id, "summary.md", summary)
             if store.drive_output_path is not None:
                 print(
                     f"kept durable result on Agent Drive {store.drive.name}:"
@@ -108,7 +152,13 @@ async def run_report(
                 )
             return 0, store
         finally:
-            await cleanup(session, sandbox)
+            primary_error = sys.exception()
+            try:
+                await cleanup(client, session_id, sandbox, receipt=receipt)
+            except Exception as cleanup_error:
+                if primary_error is None:
+                    raise
+                primary_error.add_note(f"Cleanup also failed: {cleanup_error}")
 
 
 async def main() -> int:
@@ -137,7 +187,9 @@ async def create_sandbox(
     return sandbox
 
 
-async def prepare_context(sandbox: SandboxInstance, store: ContextStore) -> None:
+async def prepare_context(
+    sandbox: SandboxInstance, store: ContextStore, *, marker: str = VERIFICATION_MARKER
+) -> None:
     mkdir = await sandbox.process.exec(
         {
             "name": "prepare-context",
@@ -156,16 +208,19 @@ async def prepare_context(sandbox: SandboxInstance, store: ContextStore) -> None
         )
     await sandbox.fs.write(
         store.input_path,
-        (EXAMPLE_DIR / "sample_report.txt").read_text(encoding="utf-8"),
+        (EXAMPLE_DIR / "sample_report.txt").read_text(encoding="utf-8")
+        + f"\nRun verification marker: {marker}\n",
     )
 
 
-def verify_result(agent_output: str, summary: str, store: ContextStore) -> None:
-    if VERIFICATION_MARKER not in agent_output:
+def verify_result(
+    agent_output: str, summary: str, store: ContextStore, *, marker: str = VERIFICATION_MARKER
+) -> None:
+    if marker not in agent_output:
         raise RuntimeError(
             f"agent response did not include the verification marker from {store.input_path}"
         )
-    if VERIFICATION_MARKER not in summary:
+    if marker not in summary:
         raise RuntimeError(
             f"generated file {store.output_path} did not include the verification marker"
         )

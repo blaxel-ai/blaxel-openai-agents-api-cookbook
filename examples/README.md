@@ -1,35 +1,45 @@
-# Three agents. Three computers. One shared workspace.
+# More file workflows
 
-Two OpenAI specialists work in parallel on a billing incident: engineering plans the retry fix while support plans customer outreach. Each writes its own findings to Agent Drive. Once both finish and their computers are deleted, the coordinator reads those files and assembles one recovery plan.
+Start with the [cookbook baseline](../README.md#run-it-yourself), which creates a summary on one computer, or its [fresh-session handoff](../README.md#continue-with-a-fresh-agent). The examples below add a distinct lesson to that configured checkout.
 
-This is a small orchestration example: Python's `TaskGroup` schedules the specialists and waits for both; OpenAI runs each agent; Blaxel provides its computer and the shared filesystem. Agent Drive holds the report and findings. The coordinator receives filenames, not copies of the specialists' output in its prompt.
+## Combine two specialists' findings
 
-```python
-async def specialist(task: str, output: str) -> None:
-    async with openai_computer(drive.name) as (agent, computer):
-        await computer.drives.mount(drive_name=drive.name, mount_path="/workspace/context")
-        await agent.input(f"Read report.txt. {task} Write your findings to {output}.")
-        await wait_for_file(agent, computer, output)
-
-async with openai_computer(drive.name) as (coordinator, computer):
-    await computer.drives.mount(drive_name=drive.name, mount_path="/workspace/context")
-    await computer.fs.write("/workspace/context/report.txt", report)
-
-    # Specialists work in parallel, each writing its own file.
-    async with asyncio.TaskGroup() as team:
-        team.create_task(specialist("Plan the billing retry fix.", "engineering.md"))
-        team.create_task(specialist("Plan the customer outreach.", "support.md"))
-
-    # Their computers are gone. The coordinator reads their work from Agent Drive.
-    await coordinator.input(
-        "Read engineering.md and support.md. Combine them into plan.md "
-        "with owners, deadlines and source filenames."
-    )
-    print(await wait_for_file(coordinator, computer, "plan.md"))
+```bash
+.venv/bin/python -m examples.openai_agent_drive
 ```
 
-The [runnable example](openai_agent_drive.py) supplies two local helpers: `openai_computer()` connects a fresh OpenAI session to a Blaxel computer and deletes both on exit; `wait_for_file()` verifies a completed task and its nonempty output. `agent.input()` and `computer.drives.mount()` are native SDK calls. `drive` is a Drive with matching access permissions; `report` contains the input text.
+Two specialists read the same fictional billing incident. Engineering writes `engineering.md`; support writes `support.md`. They run in parallel on separate computers and write different files. After both finish and their sessions and computers are deleted, a coordinator reads those files and writes `plan.md`.
 
-Run `.venv/bin/python -m examples.openai_agent_drive` from the configured cookbook. It requires access to the preview Agents API client, OpenAI project and executor keys, Blaxel authentication, and Agent Drive in `us-was-1`. The example creates a unique Drive with unique team workload-label permissions and retains it intentionally. All three temporary sessions and computers are cleaned up.
+| Agent | Task | Output |
+| --- | --- | --- |
+| Engineering specialist | Plan the billing retry fix | `engineering.md` |
+| Support specialist | Plan customer outreach | `support.md` |
+| Coordinator | Combine both findings with owners and deadlines | `plan.md` |
 
-Each specialist owns a different output filename. If one fails, `TaskGroup` cancels its sibling, waits for cleanup, and prevents the coordinator from using partial results. Completion is verified through durable turn/session polling with a 180-second timeout per task; input is never resent. The baseline, handoff and reconnect paths also verify retained turn state and final output without relying on live events.
+Python's `TaskGroup` starts the specialists and waits for their verified files. OpenAI runs each agent session; Blaxel provides the computers; Agent Drive stores the shared files. The coordinator receives their filenames and reads the results from the Drive.
+
+The [runnable source](openai_agent_drive.py) keeps that sequence visible. It requires the same two OpenAI keys and Blaxel credentials as the baseline, plus Agent Drive access in `us-was-1`. It creates a unique Drive and workload-label scope for this team and retains the files there.
+
+If a specialist fails, its sibling is cancelled and cleanup finishes before the error is reported. The coordinator does not use partial results. Specialist outputs must preserve the source evidence; the final plan must cite both files and satisfy the expected sections. A nonempty but unrelated file fails verification.
+
+## Try persistence without a model
+
+```bash
+.venv/bin/python -m examples.agent_drive
+```
+
+The [storage-only example](agent_drive.py) writes a handoff note, deletes its first Sandbox, mounts the same Drive on a fresh Sandbox, and checks that the full content and SHA-256 match. Both computers are deleted; the named Drive remains.
+
+Run it from a checkout whose dependencies are installed. It needs Blaxel credentials and Agent Drive access in `us-was-1`; it does not need OpenAI keys or invoke a model.
+
+## Inspect cleanup
+
+Both examples print their retained Drive and record owned resources in `.runs/`. If interrupted, use the receipt from the same Blaxel workspace and endpoint:
+
+```bash
+.venv/bin/python cleanup_run.py .runs/<run-id>.json
+```
+
+Verify the reported session and computer cleanup. Inspect or export the retained files before deleting their Drive.
+
+[Return to the baseline and handoff](../README.md).

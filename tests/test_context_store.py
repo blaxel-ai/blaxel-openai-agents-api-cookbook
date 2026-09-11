@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
@@ -17,16 +18,12 @@ def fake_drive(
     permissions: list[dict[str, object]] | None = None,
 ) -> Any:
     resolved_permissions = (
-        context_store.expected_drive_permissions()
-        if permissions is None
-        else permissions
+        context_store.expected_drive_permissions() if permissions is None else permissions
     )
     return SimpleNamespace(
         name=name,
         region=region,
-        spec=SimpleNamespace(
-            to_dict=lambda: {"permissions": resolved_permissions}
-        ),
+        spec=SimpleNamespace(to_dict=lambda: {"permissions": resolved_permissions}),
     )
 
 
@@ -42,9 +39,7 @@ def test_drive_configuration_is_path_and_workload_scoped() -> None:
     assert config["region"] == "us-was-1"
     assert config["permissions"] == [
         {
-            "labels": {
-                context_store.CONTEXT_LABEL: context_store.CONTEXT_LABEL_VALUE
-            },
+            "labels": {context_store.CONTEXT_LABEL: context_store.CONTEXT_LABEL_VALUE},
             "mode": "read-write",
             "path": context_store.DRIVE_ROOT,
         }
@@ -61,13 +56,13 @@ async def test_resolve_context_store_uses_agent_drive(
     created_with: dict[str, object] = {}
     drive = fake_drive()
 
-    async def create_if_not_exists(config: dict[str, object]) -> Any:
+    async def create_if_not_exists(config: dict[str, object], **_kwargs: Any) -> Any:
         created_with.update(config)
-        return drive
+        return drive, "created"
 
     monkeypatch.setattr(
-        context_store.DriveInstance,
-        "create_if_not_exists",
+        context_store,
+        "ensure_drive",
         create_if_not_exists,
     )
 
@@ -79,14 +74,11 @@ async def test_resolve_context_store_uses_agent_drive(
 
     assert store.mode == "agent-drive"
     assert store.drive is drive
+    assert store.drive_ownership == "created"
     assert store.input_path == "/workspace/context/runs/run-123/sample_report.txt"
-    assert store.drive_output_path == (
-        "/openai-agents-api-cookbook/runs/run-123/summary.md"
-    )
+    assert store.drive_output_path == ("/openai-agents-api-cookbook/runs/run-123/summary.md")
     assert store.review_path == "/workspace/context/runs/run-123/review.md"
-    assert store.drive_review_path == (
-        "/openai-agents-api-cookbook/runs/run-123/review.md"
-    )
+    assert store.drive_review_path == ("/openai-agents-api-cookbook/runs/run-123/review.md")
     assert created_with["name"] == context_store.DEFAULT_DRIVE_NAME
 
 
@@ -94,7 +86,7 @@ async def test_resolve_context_store_uses_agent_drive(
 async def test_resolve_context_store_falls_back_only_for_entitlement(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def denied(config: dict[str, object]) -> Any:
+    async def denied(config: dict[str, object], **_kwargs: Any) -> Any:
         del config
         raise DriveAPIError(
             context_store.DRIVE_ACCESS_ERROR,
@@ -102,8 +94,8 @@ async def test_resolve_context_store_falls_back_only_for_entitlement(
         )
 
     monkeypatch.setattr(
-        context_store.DriveInstance,
-        "create_if_not_exists",
+        context_store,
+        "ensure_drive",
         denied,
     )
 
@@ -123,7 +115,7 @@ async def test_resolve_context_store_falls_back_only_for_entitlement(
 async def test_resolve_context_store_handles_generated_sdk_403(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def denied(config: dict[str, object]) -> Any:
+    async def denied(config: dict[str, object], **_kwargs: Any) -> Any:
         del config
         raise UnexpectedStatus(
             403,
@@ -131,8 +123,8 @@ async def test_resolve_context_store_handles_generated_sdk_403(
         )
 
     monkeypatch.setattr(
-        context_store.DriveInstance,
-        "create_if_not_exists",
+        context_store,
+        "ensure_drive",
         denied,
     )
 
@@ -150,7 +142,7 @@ async def test_resolve_context_store_handles_generated_sdk_403(
 async def test_required_agent_drive_returns_access_page(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def denied(config: dict[str, object]) -> Any:
+    async def denied(config: dict[str, object], **_kwargs: Any) -> Any:
         del config
         raise DriveAPIError(
             context_store.DRIVE_ACCESS_ERROR,
@@ -158,8 +150,8 @@ async def test_required_agent_drive_returns_access_page(
         )
 
     monkeypatch.setattr(
-        context_store.DriveInstance,
-        "create_if_not_exists",
+        context_store,
+        "ensure_drive",
         denied,
     )
 
@@ -178,13 +170,13 @@ async def test_required_agent_drive_returns_access_page(
 async def test_unrelated_drive_error_is_not_hidden(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def denied(config: dict[str, object]) -> Any:
+    async def denied(config: dict[str, object], **_kwargs: Any) -> Any:
         del config
         raise DriveAPIError("workload is not authorized", status_code=403)
 
     monkeypatch.setattr(
-        context_store.DriveInstance,
-        "create_if_not_exists",
+        context_store,
+        "ensure_drive",
         denied,
     )
 
@@ -265,3 +257,80 @@ def test_webhook_scopes_have_distinct_drive_permissions() -> None:
         drive_configuration("a", first)["permissions"]
         != drive_configuration("b", second)["permissions"]
     )
+
+
+@pytest.mark.parametrize(
+    "existing, race, ownership",
+    [(True, False, "reused"), (False, False, "created"), (False, True, "reused")],
+)
+async def test_drive_ownership_tracks_creation_and_races(monkeypatch, existing, race, ownership):
+    calls = []
+    drive = fake_drive()
+
+    async def get(name):
+        calls.append("get")
+        if not existing and calls.count("get") == 1:
+            raise DriveAPIError("not found", status_code=404)
+        return drive
+
+    async def create(config):
+        calls.append("create")
+        if race:
+            raise DriveAPIError("already exists", status_code=409)
+        return drive
+
+    monkeypatch.setattr(context_store.DriveInstance, "get", get)
+    monkeypatch.setattr(context_store.DriveInstance, "create", create)
+    found, actual = await context_store.ensure_drive({"name": "drive"})
+    assert found is drive
+    assert actual == ownership
+    assert ("create" in calls) is not existing
+
+
+async def test_drive_allocation_intent_is_recorded_before_create_can_return(monkeypatch):
+    accepted = asyncio.Event()
+    hold_response = asyncio.Event()
+    intents: list[str] = []
+
+    async def get(_name):
+        raise DriveAPIError("not found", status_code=404)
+
+    async def create(_config):
+        accepted.set()
+        await hold_response.wait()
+
+    monkeypatch.setattr(context_store.DriveInstance, "get", get)
+    monkeypatch.setattr(context_store.DriveInstance, "create", create)
+    allocation = asyncio.create_task(
+        context_store.ensure_drive(
+            {"name": "exact-drive"},
+            on_allocation_intent=intents.append,
+        )
+    )
+    await accepted.wait()
+    assert intents == ["exact-drive"]
+    allocation.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await allocation
+
+
+@pytest.mark.parametrize("owner,expected", [("deployment-1", "created"), ("other", "reused")])
+async def test_drive_retry_recovers_only_matching_deployment_ownership(
+    monkeypatch, owner, expected
+):
+    from blaxel.core.client.models.metadata import Metadata
+
+    drive = SimpleNamespace(metadata=Metadata.from_dict({
+        "name": "drive", "labels": {context_store.DEPLOYMENT_LABEL: owner},
+    }))
+
+    async def get(name):
+        assert name == "drive"
+        return drive
+
+    monkeypatch.setattr(context_store.DriveInstance, "get", get)
+    returned, ownership = await context_store.ensure_drive({
+        "name": "drive", "labels": {context_store.DEPLOYMENT_LABEL: "deployment-1"},
+    })
+    assert returned is drive
+    assert ownership == expected
