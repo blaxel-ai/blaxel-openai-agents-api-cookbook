@@ -28,9 +28,13 @@ def test_keys_require_distinct_environment_key(monkeypatch):
     assert runtime.resolve_openai_keys() == ("app", "executor")
 
 
-def test_codex_default_isolated_from_ambient_override():
+@pytest.mark.parametrize("override", [None, "0.155.0-alpha.3.10"])
+def test_executor_version_is_independent_of_the_calling_codex_cli(override):
     environment = os.environ.copy()
-    environment.pop("CODEX_VERSION", None)
+    environment["CODEX_VERSION"] = "0.154.0"
+    environment.pop("OPENAI_EXECUTOR_VERSION", None)
+    if override is not None:
+        environment["OPENAI_EXECUTOR_VERSION"] = override
     result = subprocess.run(
         [sys.executable, "-c", "import runtime; print(runtime.CODEX_VERSION)"],
         env=environment,
@@ -38,7 +42,7 @@ def test_codex_default_isolated_from_ambient_override():
         text=True,
         check=True,
     )
-    assert result.stdout.strip() == "alpha"
+    assert result.stdout.strip() == (override or "alpha")
 
 
 def test_workspace_accepts_env_and_rejects_missing_credentials(monkeypatch):

@@ -111,7 +111,7 @@ class ControllerConfig:
             workspace=required_env("BL_WORKSPACE"),
             region=os.environ.get("BL_REGION", AGENT_DRIVE_REGION),
             worker_ttl=os.environ.get("WORKER_TTL", "2h"),
-            codex_version=os.environ.get("CODEX_VERSION", "alpha"),
+            codex_version=os.environ.get("OPENAI_EXECUTOR_VERSION", "alpha"),
             queue_path=os.environ.get("QUEUE_PATH", "/app/pending.sqlite3"),
             deployment_id=required_env("OPENAI_WEBHOOK_DEPLOYMENT_ID"),
             inventory_path=os.environ.get("INVENTORY_PATH", DEFAULT_INVENTORY_PATH),

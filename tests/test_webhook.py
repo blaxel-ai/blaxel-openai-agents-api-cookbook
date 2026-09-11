@@ -1797,3 +1797,20 @@ async def test_uncertain_worker_create_is_not_resubmitted(monkeypatch, tmp_path)
         await handler.ensure_worker("worker", "sess_1", config(), STORE, inventory)
     assert calls == ["create"]
     assert inventory.find("blaxel_sandbox", "worker").resource.state == "allocation_uncertain"
+
+
+@pytest.mark.parametrize("override", [None, "0.155.0-alpha.3.10"])
+async def test_controller_executor_version_ignores_calling_cli(monkeypatch, override):
+    monkeypatch.setenv("OPENAI_API_KEY", "project-key")
+    monkeypatch.setenv("OPENAI_EXECUTOR_API_KEY", "executor-key")
+    monkeypatch.setenv("OPENAI_AGENT_ID", "agent_123")
+    monkeypatch.setenv("BL_WORKSPACE", "ws")
+    monkeypatch.setenv("OPENAI_WEBHOOK_DEPLOYMENT_ID", "deployment-1")
+    monkeypatch.setenv("OPENAI_WEBHOOK_BLAXEL_BASE_URL", str(handler.settings.base_url))
+    monkeypatch.setenv("CODEX_VERSION", "0.154.0")
+    monkeypatch.delenv("OPENAI_EXECUTOR_VERSION", raising=False)
+    if override is not None:
+        monkeypatch.setenv("OPENAI_EXECUTOR_VERSION", override)
+    assert handler.ControllerConfig.from_env().codex_version == (override or "alpha")
+    assert "OPENAI_EXECUTOR_VERSION" in deploy.OPTIONAL_ENV
+    assert "CODEX_VERSION" not in deploy.OPTIONAL_ENV

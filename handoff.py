@@ -80,7 +80,7 @@ async def run_review(store: ContextStore) -> int:
     receipt.versions = {
         "openai": version("openai"),
         "blaxel": version("blaxel"),
-        "codex_requested": os.environ.get("CODEX_VERSION", "alpha"),
+        "codex_requested": os.environ.get("OPENAI_EXECUTOR_VERSION", "alpha"),
     }
     receipt.save()
     receipt.record("agent_drive", store.drive.name, ownership="reused", state="retained")

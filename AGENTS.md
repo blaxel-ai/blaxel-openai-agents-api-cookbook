@@ -71,6 +71,7 @@ Required environment:
 - Blaxel credentials from `bl login`, or `BL_WORKSPACE` and `BL_API_KEY`; hosted Blaxel jobs inject them
 - Public PyPI access for `openai>=3.13.0,<4` and the other dependencies in `pyproject.toml`; no private GitHub access
 - `BL_REGION` and `OPENAI_MODEL` are optional overrides
+- `OPENAI_EXECUTOR_VERSION` optionally overrides the prescribed `alpha` executor tag; ignore a caller's `CODEX_VERSION`, which coding tools can set for themselves
 - `BL_AGENT_DRIVE_MODE=auto|required|off` controls the baseline policy; `--handoff` requires Agent Drive and refuses `off`
 - `BL_AGENT_DRIVE_NAME` optionally selects the reusable drive
 - `--deploy-webhook` additionally requires `BL_API_KEY` and `BL_WORKSPACE` for the controller; the saved agent ID is created on the first deploy and reused from its secret-free `.runs` deployment manifest; `OPENAI_WEBHOOK_SECRET` comes from the OpenAI webhook registration; `WORKER_TTL` (default `2h`) and `CONTROLLER_TTL` (default `24h`) are optional

@@ -22,7 +22,7 @@ from run_receipt import RunReceipt
 
 WORKSPACE = "/workspace"
 EXECUTOR_NAME = "openai-agents-api-executor"
-CODEX_VERSION = os.environ.get("CODEX_VERSION", "alpha")
+CODEX_VERSION = os.environ.get("OPENAI_EXECUTOR_VERSION", "alpha")
 CODEX_INSTALL_TIMEOUT_SECONDS = 180
 CONNECTION_TIMEOUT_SECONDS = 60
 TURN_TIMEOUT_SECONDS = 180

@@ -4,13 +4,16 @@ September 11, 2026. These results distinguish the current checkpoint from earlie
 
 ## Current premerge checkpoint
 
-- 185 offline tests pass on Python 3.11, 3.12, 3.13, and 3.14, alongside dependency, lint, compilation, and shell checks.
+- 188 offline tests pass on Python 3.11, 3.12, 3.13, and 3.14, alongside dependency, lint, compilation, and shell checks.
 - Fresh hosted Drive-off baseline, Drive-backed baseline/handoff, storage-only handoff, and parallel team have passed artifact checks and temporary-resource cleanup. Baseline and handoff save verified local files.
 - An expected invalid-executor installation failure preserved its actionable error and verified worker deletion without creating an OpenAI session.
 - The first team attempt correctly failed its verifier because the coordinator selected an obsolete static marker. The static marker was removed from the sample, the coordinator instruction now names the fresh run marker, and a fresh team retry passed. The failed attempt is retained as evidence.
 - Hosted deployment exposed typed Blaxel metadata labels and filesystem errors that simple mocks did not model. The implementation and public-type regression coverage were corrected; fresh deployment and signing-secret redeployment passed.
 - Fresh OpenAI-origin reconnect passed. Two ordinary application sessions also completed with overlapping cold starts; deployment teardown removed their workers and Drives while preserving the application-owned sessions. The applications then deleted their own sessions.
-- Temporary registration removal and exact-resource cleanup were verified. Independent review identified an interrupted-allocation cleanup race; the fix and terminated-controller recovery pass all four Python versions. Final hosted follow-through, independent review, GitHub cookbook CI, and the nine candidate onboarding lanes are in progress.
+- Real-provider lost-response and delayed-visibility tests passed: intent persisted before the create response, unresolved ownership kept teardown incomplete, and a later retry recovered and deleted the exact owned resources. Terminated-controller recovery and explicit allocation rejection are covered too. Standards, Spec, and architecture reviewers closed their findings.
+- The first three reference-only readers completed baseline/handoff without source edits or cleanup interventions, but the evaluator requested a Drive path outside the allowed prefix. Those attempts remain unverified, with cleanup confirmed; the corrected evaluator passed a separate hosted fixture. Fresh acceptance runs are required.
+- Those runs also exposed Codex injecting its own `CODEX_VERSION` into commands. The cookbook now uses `OPENAI_EXECUTOR_VERSION` for the executor and retains the prescribed alpha default under a coding agent. Regression coverage checks both default and explicit selection.
+- Temporary registrations and exact-resource cleanup were verified. Final GitHub CI and the nine candidate onboarding lanes remain in progress.
 
 ## Tested combination
 
@@ -31,6 +34,7 @@ September 11, 2026. These results distinguish the current checkpoint from earlie
 | Hosted HTTP boundaries | Missing/tampered signatures returned 400, oversized body returned 413, valid signed unrelated event returned 200 without queueing |
 | Actual OpenAI webhook reconnect | Two OpenAI-origin provisioning deliveries, disconnect observed before second input, replacement worker read the first worker's file; session and worker deletion verified |
 | Ordinary application delivery and teardown | Two overlapping cold starts completed; controller inventory matched actual workers and Drives; teardown preserved application-owned sessions, which the applications then deleted |
+| Interrupted worker/Drive allocation | Real provider accepted creation before the injected response loss; exact allocation intent survived; uncertain late visibility retained the controller; retry resolved ownership and verified deletion |
 | Installation failure | Invalid executor version produced an actionable npm error; allocated worker deletion verified; no session or model turn allocated |
 
 The offline suite additionally covers typed pagination, stable event submission without automatic retries, connection timeout and environment failure, primary-error preservation, independent cleanup, Drive ACL/entitlement/region behavior, specialist cancellation, and webhook signatures, durable queue recovery, revisions, and backpressure.
