@@ -146,16 +146,16 @@ These are optional extensions after the first result:
 
 The public API uses `AsyncOpenAI` and `client.beta.agents`. The supported dependency ranges are `openai>=3.13.0,<4` and `blaxel>=0.4.7,<0.5`; the Codex executor follows the `alpha` tag prescribed by OpenAI. Run `python -m pip install --upgrade -e '.[dev]'` to update deliberately, and rerun lifecycle checks when the SDK or executor changes. The same `OPENAI_MODEL` override applies to the baseline, handoff, team, and newly created saved agents.
 
-| Setting | Supported policy | Migration validation |
+| Setting | Supported policy | Last verified |
 | --- | --- | --- |
 | Python | 3.11 through 3.14 | Clean install and checks passed on all four Python versions (September 11, 2026) |
 | OpenAI public Python SDK | `>=3.13.0,<4` | 3.13.0 tested locally and live |
-| Blaxel Python SDK | `>=0.4.7,<0.5` | 0.4.8 tested locally and live; 0.4.9 in fresh Linux reader runs |
+| Blaxel Python SDK | `>=0.4.7,<0.5` | 0.4.8 tested locally and live; 0.4.9 in fresh Linux onboarding runs |
 | Codex executor | `@openai/codex@alpha` | 0.155.0-alpha.3.10 tested; every worker prints its resolved version |
 | Default model | `gpt-5.6-sol` | Override with `OPENAI_MODEL` |
 | Region / baseline lifetime | `us-was-1` / 15 minutes | Recorded per run |
 
-September 11, 2026 candidate validation passed the Drive-off baseline, Drive-backed baseline and fresh-session handoff, parallel team, storage-only handoff, hosted controller deployment/redeployment, and OpenAI-origin worker reconnect. File verification and temporary-resource deletion were checked in each applicable mode. The offline suite contains 190 passing tests on Python 3.11–3.14. Nine fresh reader trials completed: eight passed the full baseline and handoff; one inner agent reported unavailable file access, failed artifact verification, and cleaned up. See [VALIDATION.md](VALIDATION.md) for the results, attribution limits, and remaining release gates. The September 7 preview-client results describe the previous implementation.
+September 11, 2026 validation covered the baseline with and without Agent Drive, fresh-session handoff, parallel team, storage-only handoff, controller deployment, and OpenAI webhook reconnect. Each applicable workflow checked its files and temporary-resource cleanup. The automated suite contains 190 passing tests on Python 3.11–3.14. See [VALIDATION.md](VALIDATION.md) for tested versions, hosted coverage, onboarding results, and known limits.
 
 The recipe submits input once to an idle session, waits up to 180 seconds for its new turn to complete (600 seconds for webhook-managed turns, including cold worker provisioning), and reads that turn's retained final answer. It rejects concurrent input and paginates retained items with a 1,000-item search bound and a 1 MiB answer limit. Turn completion uses durable state. Connection and deliberate disconnect checks also observe their lifecycle state or live stream. Cleanup cancels unfinished work when OpenAI requires durable idle before deletion.
 
