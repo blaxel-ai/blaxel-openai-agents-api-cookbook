@@ -1,8 +1,10 @@
 import asyncio
 import json
 import os
+import select
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace as R
 
@@ -74,6 +76,79 @@ def test_launcher_preflight_uses_controlled_environment(tmp_path):
     assert result.returncode == 1
     assert "OPENAI_EXECUTOR_API_KEY is required" in result.stderr
     assert "installing cookbook dependencies" not in result.stdout
+
+
+def test_launcher_progress_is_visible_before_redirected_run_finishes(tmp_path):
+    (tmp_path / "run.sh").write_text(Path("run.sh").read_text())
+    python = tmp_path / ".venv/bin/python"
+    python.parent.mkdir(parents=True)
+    python.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys\n"
+        "if sys.argv[1] in ('-c', '-m'): raise SystemExit(0)\n"
+        "os.execv(sys.executable, [sys.executable, *sys.argv[1:]])\n"
+    )
+    python.chmod(0o755)
+    (tmp_path / "main.py").write_text(
+        "import sys\nprint('recipe is running')\nsys.stdin.readline()\n"
+    )
+    process = subprocess.Popen(
+        ["bash", "run.sh"],
+        cwd=tmp_path,
+        env={
+            "PATH": os.environ["PATH"],
+            "PYTHON_BIN": sys.executable,
+            "OPENAI_API_KEY": "application",
+            "OPENAI_EXECUTOR_API_KEY": "executor",
+            "BL_API_KEY": "test",
+            "BL_WORKSPACE": "test",
+        },
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        output = b""
+        deadline = time.monotonic() + 3
+        while b"recipe is running" not in output and time.monotonic() < deadline:
+            ready, _, _ = select.select([process.stdout], [], [], 0.1)
+            if ready:
+                chunk = os.read(process.stdout.fileno(), 4096)
+                if not chunk:
+                    break
+                output += chunk
+        assert b"recipe is running" in output
+        assert process.poll() is None
+        process.communicate(input=b"\n", timeout=3)
+        assert process.returncode == 0
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.communicate()
+
+
+def test_http_debug_headers_are_quiet_with_ambient_debug_logging():
+    script = """
+import asyncio, logging
+logging.basicConfig(level=logging.DEBUG)
+import runtime
+async def main():
+    async with runtime.openai_client('test'):
+        for name in ('httpx', 'httpcore.connection', 'httpx2', 'httpcore2.connection'):
+            logger = logging.getLogger(name)
+            logger.debug('set-cookie: private-response-cookie')
+            logger.info('verbose HTTP request')
+            logger.warning('connection warning')
+        print('recipe progress')
+asyncio.run(main())
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, check=True
+    )
+    assert "private-response-cookie" not in result.stderr
+    assert "verbose HTTP request" not in result.stderr
+    assert "connection warning" in result.stderr
+    assert "recipe progress" in result.stdout
 
 
 def test_environment_details_uses_public_fields_and_remote_url_unchanged():

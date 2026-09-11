@@ -61,4 +61,4 @@ printf 'installing cookbook dependencies\n'
   || fail "Blaxel credentials unavailable: run 'bl login', or export BL_WORKSPACE and BL_API_KEY"
 
 printf '%s\n' "${RUN_LABEL}"
-exec "${VENV_DIR}/bin/python" "${ENTRYPOINT}"
+exec "${VENV_DIR}/bin/python" -u "${ENTRYPOINT}"

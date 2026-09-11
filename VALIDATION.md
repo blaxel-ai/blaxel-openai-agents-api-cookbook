@@ -4,7 +4,7 @@ September 11, 2026. These results distinguish the current checkpoint from earlie
 
 ## Current premerge checkpoint
 
-- 188 offline tests pass on Python 3.11, 3.12, 3.13, and 3.14, alongside dependency, lint, compilation, and shell checks.
+- 190 offline tests pass on Python 3.11, 3.12, 3.13, and 3.14, alongside dependency, lint, compilation, and shell checks.
 - Fresh hosted Drive-off baseline, Drive-backed baseline/handoff, storage-only handoff, and parallel team have passed artifact checks and temporary-resource cleanup. Baseline and handoff save verified local files.
 - An expected invalid-executor installation failure preserved its actionable error and verified worker deletion without creating an OpenAI session.
 - The first team attempt correctly failed its verifier because the coordinator selected an obsolete static marker. The static marker was removed from the sample, the coordinator instruction now names the fresh run marker, and a fresh team retry passed. The failed attempt is retained as evidence.
@@ -13,11 +13,14 @@ September 11, 2026. These results distinguish the current checkpoint from earlie
 - Real-provider lost-response and delayed-visibility tests passed: intent persisted before the create response, unresolved ownership kept teardown incomplete, and a later retry recovered and deleted the exact owned resources. Terminated-controller recovery and explicit allocation rejection are covered too. Standards, Spec, and architecture reviewers closed their findings.
 - The first three reference-only readers completed baseline/handoff without source edits or cleanup interventions, but the evaluator requested a Drive path outside the allowed prefix. Those attempts remain unverified, with cleanup confirmed; the corrected evaluator passed a separate hosted fixture. Fresh acceptance runs are required.
 - Those runs also exposed Codex injecting its own `CODEX_VERSION` into commands. The cookbook now uses `OPENAI_EXECUTOR_VERSION` for the executor and retains the prescribed alpha default under a coding agent. Regression coverage checks both default and explicit selection.
-- Temporary registrations and exact-resource cleanup were verified. Final GitHub CI and the nine candidate onboarding lanes remain in progress.
+- On the corrected evaluator and current runtime candidate, Terra/reference and Sonnet/reference passed. Luna/reference failed when its fresh handoff agent reported unavailable file access and created no review. The persisted source was readable from the fresh worker; the saved evidence does not establish why the agent's file-tool work failed. Verification rejected the missing artifact and all three lanes cleaned up without intervention. The remaining six lanes were not started. Independent review found no source fix justified by this evidence. A fresh Luna/reference attempt subsequently passed without source changes or coaching.
+- In the next wave, Luna/reference and Sonnet/reference passed. Terra incorrectly reported that its baseline had stopped and skipped handoff; the command exited successfully and the evaluator verified matching local and Drive summaries. This is a reader error, not evidence of incorrect setup or documentation. Sonnet separately echoed a credential during an improvised prerequisite check; collected logs were redacted. All three lanes cleaned up. These incidents are recorded separately from recipe correctness.
+- Two independently reproduced runtime-output issues were corrected: the launcher now flushes progress when redirected, and ambient debug logging no longer dumps HTTP transport headers. Both regression tests failed before the change and pass afterward. Reader prompts and documentation were not expanded to compensate for the model mistakes.
+- Temporary registrations and exact-resource cleanup were verified. Current GitHub CI passes; final evidence-commit CI and the nine candidate onboarding lanes remain in progress.
 
 ## Tested combination
 
-- Public OpenAI Python SDK 3.13.0; Blaxel Python SDK 0.4.8.
+- Public OpenAI Python SDK 3.13.0; Blaxel Python SDK 0.4.8 for local and earlier hosted checks, and 0.4.9 in fresh Linux reader installations.
 - Python 3.11, 3.12, 3.13, and 3.14: clean public dependency installs, dependency consistency, unit tests, Ruff, compilation, and shell syntax checks.
 - Hosted execution: Python 3.14, `gpt-5.6-sol`, `blaxel/node:latest`, region `us-was-1`, Codex `0.155.0-alpha.3.10` resolved from the prescribed `alpha` tag.
 - Storage-only execution: `blaxel/base-image:latest`, without an OpenAI model invocation.

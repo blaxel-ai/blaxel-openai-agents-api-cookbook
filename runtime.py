@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import shlex
@@ -53,6 +54,12 @@ def resolve_openai_keys() -> tuple[str, str]:
 
 def openai_client(api_key: str) -> AsyncOpenAI:
     """Use explicit total deadlines; never auto-retry a non-repeatable input event."""
+    # Hosted environments may enable root DEBUG logging. HTTP transport traces
+    # include response headers and obscure the recipe's lifecycle messages.
+    for name in ("httpx", "httpcore", "httpx2", "httpcore2"):
+        logger = logging.getLogger(name)
+        if logger.getEffectiveLevel() < logging.WARNING:
+            logger.setLevel(logging.WARNING)
     return AsyncOpenAI(api_key=api_key, max_retries=0, timeout=30.0)
 
 

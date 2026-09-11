@@ -150,12 +150,12 @@ The public API uses `AsyncOpenAI` and `client.beta.agents`. The supported depend
 | --- | --- | --- |
 | Python | 3.11 through 3.14 | Clean install and checks passed on all four Python versions (September 11, 2026) |
 | OpenAI public Python SDK | `>=3.13.0,<4` | 3.13.0 tested locally and live |
-| Blaxel Python SDK | `>=0.4.7,<0.5` | 0.4.8 tested locally and live |
+| Blaxel Python SDK | `>=0.4.7,<0.5` | 0.4.8 tested locally and live; 0.4.9 in fresh Linux reader runs |
 | Codex executor | `@openai/codex@alpha` | 0.155.0-alpha.3.10 tested; every worker prints its resolved version |
 | Default model | `gpt-5.6-sol` | Override with `OPENAI_MODEL` |
 | Region / baseline lifetime | `us-was-1` / 15 minutes | Recorded per run |
 
-September 11, 2026 candidate validation passed the Drive-off baseline, Drive-backed baseline and fresh-session handoff, parallel team, storage-only handoff, hosted controller deployment/redeployment, and OpenAI-origin worker reconnect. File verification and temporary-resource deletion were checked in each applicable mode. The offline suite contains 188 passing tests on Python 3.11–3.14. See [VALIDATION.md](VALIDATION.md) for scope and remaining release gates. The September 7 preview-client results describe the previous implementation.
+September 11, 2026 candidate validation passed the Drive-off baseline, Drive-backed baseline and fresh-session handoff, parallel team, storage-only handoff, hosted controller deployment/redeployment, and OpenAI-origin worker reconnect. File verification and temporary-resource deletion were checked in each applicable mode. The offline suite contains 190 passing tests on Python 3.11–3.14. See [VALIDATION.md](VALIDATION.md) for scope and remaining release gates. The September 7 preview-client results describe the previous implementation.
 
 The recipe submits input once to an idle session, waits up to 180 seconds for its new turn to complete (600 seconds for webhook-managed turns, including cold worker provisioning), and reads that turn's retained final answer. It rejects concurrent input and paginates retained items with a 1,000-item search bound and a 1 MiB answer limit. Turn completion uses durable state. Connection and deliberate disconnect checks also observe their lifecycle state or live stream. Cleanup cancels unfinished work when OpenAI requires durable idle before deletion.
 
