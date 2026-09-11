@@ -5,5 +5,3 @@ This week, 1,200 billing attempts were recorded: 1,158 completed and 42 failed. 
 Maya owns the retry fix, due Tuesday. Theo owns the expired-card outreach, due Wednesday. The retry fix must keep the original idempotency key so a timeout cannot create a second charge.
 
 Prepare a short handoff that another agent can use to review the plan tomorrow. Include the owners, deadlines, counts, and the missing-data caveat. Keep facts separate from recommendations.
-
-Verification marker: BLAXEL_AGENT_FILE_7C4E91

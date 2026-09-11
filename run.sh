@@ -40,6 +40,7 @@ command -v "${PYTHON_BIN}" >/dev/null 2>&1 || fail "${PYTHON_BIN} is not install
   || fail "Python 3.11 through 3.14 is required"
 
 [[ -n "${OPENAI_API_KEY:-}" ]] || fail "OPENAI_API_KEY is required"
+[[ -n "${OPENAI_EXECUTOR_API_KEY:-}" ]] || fail "OPENAI_EXECUTOR_API_KEY is required; create a separate environment key at https://platform.openai.com/agents?tab=environments&environment_view=keys"
 if [[ -n "${OPENAI_EXECUTOR_API_KEY:-}" && "${OPENAI_EXECUTOR_API_KEY}" == "${OPENAI_API_KEY}" ]]; then
   fail "OPENAI_EXECUTOR_API_KEY must be a separate restricted key, not a copy of OPENAI_API_KEY"
 fi
@@ -53,10 +54,10 @@ if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
 fi
 
 printf 'installing cookbook dependencies\n'
-"${VENV_DIR}/bin/python" -m pip --disable-pip-version-check --quiet install --upgrade --force-reinstall -e "${ROOT_DIR}" \
-  || fail "dependency installation failed; the Agents API client referenced in pyproject.toml must be reachable from this machine"
+"${VENV_DIR}/bin/python" -m pip --disable-pip-version-check --quiet install -e "${ROOT_DIR}" \
+  || fail "dependency installation failed; check access to public PyPI and the Python version"
 
-"${VENV_DIR}/bin/python" -c 'from runtime import resolve_blaxel_workspace; resolve_blaxel_workspace()' \
+"${VENV_DIR}/bin/python" -c 'from openai import AsyncOpenAI; from runtime import resolve_blaxel_workspace; resolve_blaxel_workspace()' \
   || fail "Blaxel credentials unavailable: run 'bl login', or export BL_WORKSPACE and BL_API_KEY"
 
 printf '%s\n' "${RUN_LABEL}"

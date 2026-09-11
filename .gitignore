@@ -1,5 +1,6 @@
 .env
 .env.*
+!.env.example
 .venv/
 __pycache__/
 *.py[cod]
@@ -11,3 +12,9 @@ dist/
 
 # Local launch drafts, review media, and runtime receipts.
 /launch/
+
+# Exact resource receipts and deployment state (no credentials).
+.runs/
+
+# Verified local reader artifacts.
+outputs/

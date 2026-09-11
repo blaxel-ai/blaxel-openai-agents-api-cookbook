@@ -1,329 +1,490 @@
-from __future__ import annotations
-
+import asyncio
+import json
 import os
 import subprocess
 import sys
-from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any
+from types import SimpleNamespace as R
 
 import pytest
-from agent_api_sdk import SelfHostedEnvironmentInfo
-from blaxel.core.client.errors import UnexpectedStatus
 
 import handoff
+import local_output
 import main
+import run_receipt
 import runtime
 from context_store import ContextStore
 
 
-def test_defaults_follow_openai_examples() -> None:
-    assert main.DEFAULT_MODEL == "gpt-5.6-sol"
-    assert runtime.CODEX_VERSION == "alpha"
-
-
-def test_exec_server_command_targets_agents_api() -> None:
-    assert runtime.exec_server_command("env_test") == [
-        "codex",
-        "exec-server",
-        "--remote",
-        "https://api.openai.com/v1/agents/api",
-        "--environment-id",
-        "env_test",
-    ]
-
-
-def test_required_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    with pytest.raises(RuntimeError, match="OPENAI_API_KEY is required"):
-        runtime.required_env("OPENAI_API_KEY")
-
-
-def test_executor_key_is_used_when_set(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setenv("OPENAI_API_KEY", "project-key")
-    monkeypatch.setenv("OPENAI_EXECUTOR_API_KEY", "executor-key")
-
-    assert runtime.resolve_openai_keys() == ("project-key", "executor-key")
-    assert capsys.readouterr().err == ""
-
-
-def test_missing_executor_key_falls_back_loudly(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setenv("OPENAI_API_KEY", "project-key")
+def test_keys_require_distinct_environment_key(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "app")
     monkeypatch.delenv("OPENAI_EXECUTOR_API_KEY", raising=False)
-    monkeypatch.setattr(runtime, "_fallback_warned", [])
+    with pytest.raises(RuntimeError, match="environment key"):
+        runtime.resolve_openai_keys()
+    monkeypatch.setenv("OPENAI_EXECUTOR_API_KEY", "app")
+    with pytest.raises(RuntimeError, match="separate"):
+        runtime.resolve_openai_keys()
+    monkeypatch.setenv("OPENAI_EXECUTOR_API_KEY", "executor")
+    assert runtime.resolve_openai_keys() == ("app", "executor")
 
-    assert runtime.resolve_openai_keys() == ("project-key", "project-key")
-    assert runtime.resolve_openai_keys() == ("project-key", "project-key")
-    assert capsys.readouterr().err.count("OPENAI_EXECUTOR_API_KEY is not set") == 1
+
+def test_codex_default_isolated_from_ambient_override():
+    environment = os.environ.copy()
+    environment.pop("CODEX_VERSION", None)
+    result = subprocess.run(
+        [sys.executable, "-c", "import runtime; print(runtime.CODEX_VERSION)"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == "alpha"
 
 
-def test_blaxel_workspace_prefers_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_workspace_accepts_env_and_rejects_missing_credentials(monkeypatch):
     monkeypatch.setenv("BL_WORKSPACE", "from-env")
     monkeypatch.setattr(runtime, "blaxel_credentials_missing", lambda: False)
-
     assert runtime.resolve_blaxel_workspace() == "from-env"
-
-
-def test_blaxel_workspace_requires_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("BL_WORKSPACE", raising=False)
+    monkeypatch.delenv("BL_WORKSPACE")
     monkeypatch.setattr(runtime, "blaxel_login_workspace", lambda: "from-login")
     monkeypatch.setattr(runtime, "blaxel_credentials_missing", lambda: True)
-
-    with pytest.raises(RuntimeError, match="run `bl login`"):
+    with pytest.raises(RuntimeError, match="bl login"):
         runtime.resolve_blaxel_workspace()
 
 
-@pytest.mark.asyncio
-async def test_start_exec_server_only_passes_executor_key() -> None:
-    calls: list[dict[str, Any]] = []
+def test_launcher_preflight_uses_controlled_environment(tmp_path):
+    result = subprocess.run(
+        ["bash", "run.sh"],
+        env={
+            "PATH": os.environ["PATH"],
+            "PYTHON_BIN": sys.executable,
+            "OPENAI_API_KEY": "application-only",
+            "BL_API_KEY": "test",
+            "BL_WORKSPACE": "test",
+            "HOME": str(tmp_path),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "OPENAI_EXECUTOR_API_KEY is required" in result.stderr
+    assert "installing cookbook dependencies" not in result.stdout
 
+
+def test_environment_details_uses_public_fields_and_remote_url_unchanged():
+    session = R(
+        environment=R(type="self_hosted", id="env_1", remote_url="https://example.test/custom/path")
+    )
+    assert runtime.environment_details(session) == ("env_1", "https://example.test/custom/path")
+    assert (
+        runtime.exec_server_command(*reversed(runtime.environment_details(session)))[3]
+        == "https://example.test/custom/path"
+    )
+    with pytest.raises(RuntimeError, match="self-hosted"):
+        runtime.environment_details(R(environment=R(type="none")))
+
+
+def test_real_sandbox_contract_uses_metadata_name():
+    assert runtime.sandbox_name(R(metadata=R(name="worker-real-shape"))) == "worker-real-shape"
+    with pytest.raises(RuntimeError, match="metadata.name"):
+        runtime.sandbox_name(R())
+
+
+def test_diagnostics_redacts_known_and_bearer_secrets(monkeypatch):
+    monkeypatch.setenv("OPENAI_EXECUTOR_API_KEY", "executor-super-secret")
+    text = runtime.sanitize_diagnostics(
+        "executor-super-secret Authorization: Bearer sk-also-secret-value"
+    )
+    assert "secret" not in text
+    assert text.count("[redacted]") == 2
+
+
+async def test_diagnostic_lookup_failure_preserves_original_message():
     class Process:
-        async def exec(self, request: dict[str, Any]) -> None:
+        async def get(self, _):
+            raise RuntimeError("logs unavailable")
+
+    with pytest.raises(RuntimeError, match="original turn failure") as raised:
+        await runtime.raise_with_executor_diagnostics(R(process=Process()), "original turn failure")
+    assert "logs unavailable" in str(raised.value)
+
+
+async def test_start_executor_only_exposes_executor_key():
+    calls = []
+
+    class P:
+        async def exec(self, request):
             calls.append(request)
 
-    sandbox = SimpleNamespace(process=Process())
-    await runtime.start_exec_server(sandbox, "executor-key", "env_test")  # type: ignore[arg-type]
-
-    assert calls[0]["env"] == {"CODEX_API_KEY": "executor-key"}
+    await runtime.start_exec_server(R(process=P()), "executor", "env", "https://remote.test/path")
+    assert calls[0]["env"] == {"CODEX_API_KEY": "executor"}
     assert calls[0]["keep_alive"] is True
-    assert "env_test" in calls[0]["command"]
 
 
-def test_environment_id_of_requires_self_hosted() -> None:
-    hosted = SimpleNamespace(info=SimpleNamespace(environment=self_hosted_environment()))
-    assert runtime.environment_id_of(hosted) == "environment-test"  # type: ignore[arg-type]
+async def test_connect_executor_subscribes_before_start_and_waits_for_connected(monkeypatch):
+    events = []
 
-    other = SimpleNamespace(info=SimpleNamespace(environment=SimpleNamespace(type="cloud")))
-    with pytest.raises(RuntimeError, match="expected self-hosted environment"):
-        runtime.environment_id_of(other)  # type: ignore[arg-type]
+    class Stream:
+        async def __aiter__(self):
+            events.append("read")
+            try:
+                yield R(
+                    type="agent.session.environment.connected",
+                    session_id="sess",
+                    environment=R(id="env"),
+                )
+            finally:
+                events.append("iterator-closed")
 
+        async def close(self):
+            events.append("closed")
 
-def self_hosted_environment() -> SelfHostedEnvironmentInfo:
-    return SelfHostedEnvironmentInfo(
-        type="self_hosted",
-        environment_id="environment-test",
-        workspace_directory="/workspace",
+    class EventResource:
+        async def stream(self, session_id, **options):
+            assert session_id == "sess"
+            assert options["timeout"] == runtime.CONNECTION_TIMEOUT_SECONDS
+            events.append("subscribed")
+            return Stream()
+
+    async def start(*_):
+        assert events == ["subscribed"]
+        events.append("started")
+
+    async def retrieve(_):
+        return R(status="idle")
+
+    monkeypatch.setattr(runtime, "start_exec_server", start)
+    monkeypatch.setattr(runtime, "check_executor_running", lambda *_: _async_none())
+    client = R(beta=R(agents=R(sessions=R(events=EventResource(), retrieve=retrieve))))
+    session = R(
+        id="sess",
+        environment=R(type="self_hosted", id="env", remote_url="https://remote.test"),
     )
+    await runtime.connect_executor(client, session, R(), "key")
+    assert events[0] == "subscribed"
+    assert "started" in events and "read" in events
+    assert events[-2:] == ["iterator-closed", "closed"]
 
 
-def test_sample_report_contains_verification_marker() -> None:
-    sample_report = (Path(__file__).parents[1] / "sample_report.txt").read_text(
-        encoding="utf-8"
+async def _async_none(*_args, **_kwargs):
+    return None
+
+
+async def test_cleanup_attempts_both_and_verifies(monkeypatch):
+    events = []
+
+    async def delete_session(*_):
+        events.append("session")
+
+    async def wait_gone(name):
+        events.append(f"gone:{name}")
+
+    class Sandbox:
+        metadata = R(name="worker")
+
+        async def delete(self):
+            events.append("sandbox")
+
+    monkeypatch.setattr(runtime, "delete_session", delete_session)
+    monkeypatch.setattr(runtime, "wait_for_sandbox_deletion", wait_gone)
+    await runtime.cleanup(R(), "sess", Sandbox())
+    assert events == ["session", "sandbox", "gone:worker"]
+
+
+async def test_cleanup_attempts_sandbox_after_session_failure(monkeypatch):
+    events = []
+
+    async def fail(*_):
+        events.append("session")
+        raise RuntimeError("delete failed")
+
+    async def wait_gone(_):
+        events.append("gone")
+
+    class Sandbox:
+        metadata = R(name="worker")
+
+        async def delete(self):
+            events.append("sandbox")
+
+    monkeypatch.setattr(runtime, "delete_session", fail)
+    monkeypatch.setattr(runtime, "wait_for_sandbox_deletion", wait_gone)
+    with pytest.raises(ExceptionGroup):
+        await runtime.cleanup(R(), "sess", Sandbox())
+    assert events == ["session", "sandbox", "gone"]
+
+
+async def test_cleanup_reports_receipt_failure_after_attempting_both_resources(monkeypatch):
+    events = []
+
+    async def delete_session(*_args):
+        events.append("session")
+
+    async def wait_gone(_name):
+        events.append("gone")
+
+    class Receipt:
+        run_id = "run"
+        path = "receipt.json"
+        target = {
+            "blaxel_workspace": "ws",
+            "blaxel_base_url": "https://api.blaxel.test/v0",
+        }
+
+        def update(self, *_args, **_kwargs):
+            raise OSError("receipt unavailable")
+
+    class Sandbox:
+        metadata = R(name="worker")
+
+        async def delete(self):
+            events.append("sandbox")
+
+    monkeypatch.setattr(runtime, "resolve_blaxel_workspace", lambda: "ws")
+    monkeypatch.setattr(runtime, "resolve_blaxel_base_url", lambda: "https://api.blaxel.test/v0")
+    monkeypatch.setattr(runtime, "delete_session", delete_session)
+    monkeypatch.setattr(runtime, "wait_for_sandbox_deletion", wait_gone)
+    with pytest.raises(ExceptionGroup) as raised:
+        await runtime.cleanup(R(), "sess", Sandbox(), receipt=Receipt())
+    assert "receipt update failed" in " ".join(str(error) for error in raised.value.exceptions)
+    assert events == ["session", "sandbox", "gone"]
+
+
+async def test_normal_cleanup_rejects_target_drift_before_both_providers(monkeypatch, tmp_path):
+    receipt = run_receipt.RunReceipt(
+        run_id="run",
+        mode="baseline",
+        target={
+            "blaxel_workspace": "original",
+            "blaxel_base_url": "https://api.blaxel.test/v0",
+        },
+        path=tmp_path / "receipt.json",
     )
+    receipt.record("openai_session", "sess", ownership="created")
+    receipt.record("blaxel_sandbox", "worker", ownership="created")
+    calls = []
 
-    assert main.VERIFICATION_MARKER in sample_report
+    async def delete_session(*_args):
+        calls.append("session")
 
+    class Sandbox:
+        metadata = R(name="worker")
 
-def ephemeral_store() -> ContextStore:
-    return ContextStore(
-        mode="ephemeral",
-        run_id="test-run",
-        access_url="https://example.test/drives",
-    )
+        async def delete(self):
+            calls.append("sandbox")
 
-
-def test_verify_result_requires_response_marker() -> None:
-    with pytest.raises(RuntimeError, match="agent response did not include"):
-        main.verify_result(
-            "The workspace filesystem is not accessible.",
-            f"Marker: {main.VERIFICATION_MARKER}",
-            ephemeral_store(),
-        )
-
-
-def test_verify_result_requires_generated_file_marker() -> None:
-    with pytest.raises(RuntimeError, match="generated file"):
-        main.verify_result(
-            f"Marker: {main.VERIFICATION_MARKER}",
-            "The marker was omitted.",
-            ephemeral_store(),
-        )
+    monkeypatch.setattr(runtime, "resolve_blaxel_workspace", lambda: "current")
+    monkeypatch.setattr(runtime, "resolve_blaxel_base_url", lambda: "https://api.blaxel.test/v0")
+    monkeypatch.setattr(runtime, "delete_session", delete_session)
+    with pytest.raises(RuntimeError, match="different Blaxel target"):
+        await runtime.cleanup(R(), "sess", Sandbox(), receipt=receipt)
+    assert calls == []
 
 
-def test_verify_result_accepts_both_markers() -> None:
-    marker = f"Verification marker: {main.VERIFICATION_MARKER}"
-    main.verify_result(marker, marker, ephemeral_store())
+@pytest.mark.parametrize(
+    "message, expected",
+    [
+        ("session must be durably idle", ["delete", "agent.session.input.cancel", "delete"]),
+        ("session changed during parent-guarded runtime write", ["delete", "delete"]),
+    ],
+)
+async def test_busy_session_is_cancelled_once_then_retried(monkeypatch, message, expected):
+    calls = []
+
+    class StatusError(Exception):
+        status_code = 409
+
+        def __str__(self):
+            return message
+
+    class Sessions:
+        def __init__(self):
+            self.events = self
+
+        async def delete(self, _):
+            calls.append("delete")
+            if calls.count("delete") < 2:
+                raise StatusError()
+
+        async def create(self, _, *, events):
+            calls.append(events[0]["type"])
+
+        async def retrieve(self, _):
+            error = StatusError()
+            error.status_code = 404
+            raise error
+
+    async def no_wait(_):
+        return None
+
+    monkeypatch.setattr(runtime, "APIStatusError", StatusError)
+    monkeypatch.setattr(runtime.asyncio, "sleep", no_wait)
+    sessions = Sessions()
+    client = R(beta=R(agents=R(sessions=sessions)))
+    await runtime.delete_session(client, "sess")
+    assert calls == expected
 
 
-def test_verify_review_requires_both_markers() -> None:
+def test_receipt_is_immediate_secret_free_and_atomic(monkeypatch, tmp_path):
+    monkeypatch.setattr(run_receipt, "RECEIPT_DIR", tmp_path)
+    receipt = run_receipt.RunReceipt.create("run-1", "baseline")
+    receipt.record("openai_session", "sess_1", ownership="created")
+    receipt.update("openai_session", "sess_1", "deletion_verified")
+    text = (tmp_path / "run-1.json").read_text()
+    assert "deletion_verified" in text
+    assert json.loads(text)["resources"][0]["resource_id"] == "sess_1"
+    assert not list(tmp_path.glob(".*"))
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"kind": "unknown", "ownership": "created"},
+        {"kind": "openai_session", "ownership": "unknown"},
+        {"kind": "openai_session", "ownership": "created", "state": "unknown"},
+    ],
+)
+def test_receipt_rejects_invalid_resource_values_when_recording(monkeypatch, tmp_path, kwargs):
+    monkeypatch.setattr(run_receipt, "RECEIPT_DIR", tmp_path)
+    receipt = run_receipt.RunReceipt.create("run-invalid", "baseline")
+    with pytest.raises(ValueError, match="invalid resource"):
+        receipt.record(resource_id="id", **kwargs)
+
+
+def ephemeral_store():
+    return ContextStore(mode="ephemeral", run_id="run", access_url="https://example.test")
+
+
+def test_baseline_and_handoff_verify_exact_markers():
     store = ephemeral_store()
-    valid = f"{main.VERIFICATION_MARKER}\n{handoff.HANDOFF_MARKER}"
+    source = "BLAXEL_AGENT_FILE_ABC123"
+    main.verify_result(source, source, store, marker=source)
+    handoff.verify_review(
+        source + handoff.HANDOFF_MARKER,
+        source + handoff.HANDOFF_MARKER,
+        store,
+        source_marker=source,
+    )
+    with pytest.raises(RuntimeError):
+        main.verify_result("other", source, store, marker=source)
 
-    handoff.verify_review(valid, valid, store)
-    with pytest.raises(RuntimeError, match=handoff.HANDOFF_MARKER):
-        handoff.verify_review(main.VERIFICATION_MARKER, valid, store)
 
+async def test_handoff_disabled_before_baseline(monkeypatch):
+    called = False
 
-@pytest.mark.asyncio
-async def test_handoff_rejects_disabled_drive_before_baseline(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    baseline_started = False
-
-    async def run_report_if_called(
-        *,
-        drive_mode: str | None = None,
-    ) -> tuple[int, ContextStore]:
-        nonlocal baseline_started
-        del drive_mode
-        baseline_started = True
-        return 0, ephemeral_store()
+    async def report(**_):
+        nonlocal called
+        called = True
 
     monkeypatch.setenv("BL_AGENT_DRIVE_MODE", "off")
-    monkeypatch.setattr(handoff, "run_report", run_report_if_called)
-
-    with pytest.raises(handoff.AgentDriveRequiredError, match="requires Agent Drive"):
+    monkeypatch.setattr(handoff, "run_report", report)
+    with pytest.raises(handoff.AgentDriveRequiredError):
         await handoff.main()
+    assert not called
 
-    assert not baseline_started
 
-
-@pytest.mark.asyncio
-async def test_handoff_starts_review_only_after_baseline_finishes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    events: list[str] = []
+async def test_handoff_starts_review_after_baseline_returns(monkeypatch):
+    events = []
     store = ephemeral_store()
 
-    async def run_report(
-        *,
-        drive_mode: str | None = None,
-    ) -> tuple[int, ContextStore]:
-        assert drive_mode == "required"
+    async def report(**_):
         events.extend(["baseline-started", "baseline-cleaned"])
         return 0, store
 
-    async def run_review(received_store: ContextStore) -> int:
-        assert received_store is store
-        assert events[-1] == "baseline-cleaned"
+    async def review(received):
+        assert received is store
         events.append("review-started")
         return 0
 
     monkeypatch.delenv("BL_AGENT_DRIVE_MODE", raising=False)
-    monkeypatch.setattr(handoff, "run_report", run_report)
-    monkeypatch.setattr(handoff, "run_review", run_review)
-
+    monkeypatch.setattr(handoff, "run_report", report)
+    monkeypatch.setattr(handoff, "run_review", review)
     assert await handoff.main() == 0
     assert events == ["baseline-started", "baseline-cleaned", "review-started"]
 
 
-@pytest.mark.asyncio
-async def test_read_persisted_source_retries_404(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_handoff_source_read_retries_not_found(monkeypatch):
     attempts = 0
 
     class Files:
-        async def read(self, path: str) -> str:
+        async def read(self, _path):
             nonlocal attempts
-            assert path.endswith("/summary.md")
             attempts += 1
             if attempts == 1:
-                raise UnexpectedStatus(404, b"not found")
-            return f"persisted {main.VERIFICATION_MARKER}"
+                from blaxel.core.client.errors import UnexpectedStatus
 
-    async def no_wait(_seconds: float) -> None:
+                raise UnexpectedStatus(404, b"not found")
+            return "persisted"
+
+    async def no_wait(_):
         return None
 
     monkeypatch.setattr(handoff.asyncio, "sleep", no_wait)
-    source = await handoff.read_persisted_source(
-        SimpleNamespace(fs=Files()),  # type: ignore[arg-type]
-        ephemeral_store(),
-    )
-
-    assert main.VERIFICATION_MARKER in source
+    assert await handoff.read_persisted_source(R(fs=Files()), ephemeral_store()) == "persisted"
     assert attempts == 2
 
 
-@pytest.mark.asyncio
-async def test_run_review_cleans_up_both_resources_after_agent_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    events: list[str] = []
+async def test_handoff_agent_failure_still_cleans_both_resources(monkeypatch):
+    events = []
+    session = R(
+        id="sess",
+        environment=R(type="self_hosted", id="env", remote_url="https://remote.test"),
+    )
 
-    class FakeSession:
-        id = "session-test"
-        info = SimpleNamespace(environment=self_hosted_environment())
+    class Client:
+        beta = R(agents=R(sessions=R(create=None)))
 
-        async def delete(self) -> None:
-            events.append("session-deleted")
-
-    class FakeSessions:
-        async def create(self, **_kwargs: object) -> FakeSession:
-            events.append("session-created")
-            return FakeSession()
-
-    class FakeClient:
-        sessions = FakeSessions()
-
-        async def __aenter__(self) -> FakeClient:
+        async def __aenter__(self):
             return self
 
-        async def __aexit__(self, *_args: object) -> None:
+        async def __aexit__(self, *_):
             return None
 
-    class FakeSDK:
-        def __init__(self, *, api_key: str) -> None:
-            assert api_key == "test-only"
+    client = Client()
 
-        def __enter__(self) -> None:
-            raise AssertionError("sync context manager should not be used")
+    async def create(**_):
+        events.append("session-created")
+        return session
 
-        async def __aenter__(self) -> FakeClient:
-            return FakeClient()
+    client.beta.agents.sessions.create = create
+    sandbox = R(metadata=R(name="worker"))
 
-        async def __aexit__(self, *_args: object) -> None:
-            return None
-
-    class FakeSandbox:
-        async def delete(self) -> None:
-            events.append("sandbox-deleted")
-
-    async def create_sandbox(
-        _region: str,
-        *,
-        prefix: str,
-    ) -> FakeSandbox:
-        assert prefix == "openai-agents-api-handoff"
+    async def create_sandbox(*_, **__):
         events.append("sandbox-created")
-        return FakeSandbox()
+        return sandbox
 
-    async def no_op(*_args: object, **_kwargs: object) -> None:
-        return None
+    async def source(*_):
+        return "persisted BLAXEL_AGENT_RUN_ABC123"
 
-    async def persisted_source(
-        _sandbox: object,
-        _store: ContextStore,
-    ) -> str:
-        return main.VERIFICATION_MARKER
-
-    async def fail_agent(*_args: object, **_kwargs: object) -> str:
+    async def fail(*_):
         events.append("agent-failed")
         raise RuntimeError("agent failed")
 
-    drive_store = ContextStore(
-        mode="agent-drive",
-        run_id="test-run",
-        access_url="https://example.test/drives",
-        drive=SimpleNamespace(name="test-drive"),  # type: ignore[arg-type]
-    )
-    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
-    monkeypatch.setattr(handoff, "AgentAPISDK", FakeSDK)
+    async def cleanup(*args, **_):
+        assert args[1:] == ("sess", sandbox)
+        events.extend(["session-deleted", "sandbox-deleted"])
+
+    receipt = R(record=lambda *_, **__: None, versions={}, save=lambda: None)
+    monkeypatch.setattr(handoff, "resolve_openai_keys", lambda: ("app", "executor"))
+    monkeypatch.setattr(handoff, "resolve_blaxel_workspace", lambda: "workspace")
+    monkeypatch.setattr(handoff, "openai_client", lambda _: client)
+    monkeypatch.setattr(handoff.RunReceipt, "create", lambda *_: receipt)
     monkeypatch.setattr(handoff, "create_sandbox", create_sandbox)
-    monkeypatch.setattr(handoff, "mount_context_store", no_op)
-    monkeypatch.setattr(handoff, "read_persisted_source", persisted_source)
-    monkeypatch.setattr(handoff, "install_codex", no_op)
-    monkeypatch.setattr(handoff, "start_exec_server", no_op)
-    monkeypatch.setattr(handoff, "run_agent_turn", fail_agent)
-
+    monkeypatch.setattr(handoff, "mount_context_store", _async_none)
+    monkeypatch.setattr(handoff, "read_persisted_source", source)
+    monkeypatch.setattr(handoff, "install_codex", lambda *_: _async_value("codex 1"))
+    monkeypatch.setattr(handoff, "connect_executor", _async_none)
+    monkeypatch.setattr(handoff, "run_agent_turn", fail)
+    monkeypatch.setattr(handoff, "cleanup", cleanup)
+    store = ContextStore(
+        mode="agent-drive",
+        run_id="run",
+        access_url="https://example.test",
+        drive=R(name="drive"),
+    )
     with pytest.raises(RuntimeError, match="agent failed"):
-        await handoff.run_review(drive_store)
-
+        await handoff.run_review(store)
     assert events == [
         "sandbox-created",
         "session-created",
@@ -333,170 +494,218 @@ async def test_run_review_cleans_up_both_resources_after_agent_failure(
     ]
 
 
-def test_print_context_store_shows_native_access_page(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    store = ContextStore(
-        mode="ephemeral",
-        run_id="test-run",
-        access_url="https://app.blaxel.ai/demo/global-agentic-network/drives",
-        reason="Agent Drive is not enabled for workspace 'demo'",
+async def _async_value(value):
+    return value
+
+
+def test_sample_source_present():
+    assert (Path(__file__).parents[1] / "sample_report.txt").is_file()
+
+
+async def test_connection_failure_survives_stream_close_failure(monkeypatch):
+    class Stream:
+        async def __aiter__(self):
+            yield R(
+                type="agent.session.environment.failed",
+                session_id="sess",
+                error="permission denied",
+            )
+
+        async def close(self):
+            raise RuntimeError("close failed")
+
+    async def stream(*_, **__):
+        return Stream()
+
+    monkeypatch.setattr(runtime, "start_exec_server", _async_none)
+    monkeypatch.setattr(runtime, "check_executor_running", _async_none)
+    client = R(beta=R(agents=R(sessions=R(events=R(stream=stream)))))
+    session = R(
+        id="sess", environment=R(type="self_hosted", id="env", remote_url="https://remote.test")
     )
-
-    main.print_context_store(store)
-
-    output = capsys.readouterr().out
-    assert "Request access: https://app.blaxel.ai/demo/global-agentic-network/drives" in output
-    assert "Continuing with disposable sandbox context." in output
+    with pytest.raises(RuntimeError, match="permission denied") as raised:
+        await runtime.connect_executor(client, session, None, "key")
+    assert "close failed" in " ".join(raised.value.__notes__)
 
 
-def test_print_context_store_does_not_show_access_page_for_region(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    store = ContextStore(
-        mode="ephemeral",
-        run_id="test-run",
-        access_url="https://app.blaxel.ai/demo/global-agentic-network/drives",
-        reason="Agent Drive requires us-was-1; BL_REGION is eu-dub-1",
+async def test_connection_budget_includes_stream_subscription(monkeypatch):
+    async def stream(*_, **__):
+        await asyncio.Event().wait()
+
+    client = R(beta=R(agents=R(sessions=R(events=R(stream=stream)))))
+    session = R(
+        id="sess", environment=R(type="self_hosted", id="env", remote_url="https://remote.test")
     )
-
-    main.print_context_store(store)
-
-    output = capsys.readouterr().out
-    assert "Agent Drive requires us-was-1" in output
-    assert "Request access:" not in output
+    with pytest.raises(RuntimeError, match="connection timed out"):
+        await runtime.connect_executor(client, session, None, "key", timeout_seconds=0.01)
 
 
-def test_cli_reports_required_agent_drive_without_traceback(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    async def access_required() -> int:
-        raise main.AgentDriveRequiredError(
-            "Agent Drive is not enabled. Request access: https://example.test"
+class FakeOpenAIClient:
+    def __init__(self, session_id="sess"):
+        session = R(
+            id=session_id,
+            status="idle",
+            environment=R(type="self_hosted", id=f"env-{session_id}", remote_url="https://remote"),
         )
 
-    monkeypatch.setattr(main, "main", access_required)
+        async def create(**_kwargs):
+            return session
 
-    assert main.cli() == 3
-    error = capsys.readouterr().err
-    assert error == (
-        "Agent Drive required: Agent Drive is not enabled. "
-        "Request access: https://example.test\n"
+        async def retrieve(_session_id):
+            return session
+
+        self.beta = R(agents=R(sessions=R(create=create, retrieve=retrieve)))
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+
+async def test_baseline_saves_the_independently_verified_summary(
+    monkeypatch, tmp_path, capsys
+):
+    store = ContextStore(mode="ephemeral", run_id="reader-run", access_url="https://access")
+    marker = ""
+
+    class Files:
+        async def read(self, path):
+            assert path == store.output_path
+            return f"useful summary\n{marker}\n"
+
+    sandbox = R(metadata=R(name="worker"), fs=Files())
+
+    async def prepare(_sandbox, _store, *, marker: str):
+        nonlocal_marker[0] = marker
+
+    nonlocal_marker = [""]
+
+    async def turn(*_args, **_kwargs):
+        nonlocal marker
+        marker = nonlocal_marker[0]
+        return f"completed {marker}"
+
+    cleaned = []
+
+    async def cleanup(*_args, **_kwargs):
+        cleaned.append(True)
+
+    monkeypatch.setattr(local_output, "OUTPUT_ROOT", tmp_path / "outputs")
+    monkeypatch.setattr(run_receipt, "RECEIPT_DIR", tmp_path / ".runs")
+    monkeypatch.setattr(main, "resolve_openai_keys", lambda: ("app", "executor"))
+    monkeypatch.setattr(main, "resolve_blaxel_workspace", lambda: "ws")
+    monkeypatch.setattr(main, "resolve_blaxel_base_url", lambda: "https://api.blaxel.ai/v0")
+    monkeypatch.setattr(main, "resolve_context_store", lambda **_kwargs: _async_value(store))
+    monkeypatch.setattr(main, "openai_client", lambda _key: FakeOpenAIClient())
+    monkeypatch.setattr(main, "create_sandbox", lambda *_args, **_kwargs: _async_value(sandbox))
+    monkeypatch.setattr(main, "mount_context_store", _async_none)
+    monkeypatch.setattr(main, "prepare_context", prepare)
+    monkeypatch.setattr(main, "install_codex", lambda *_args: _async_value("codex test"))
+    monkeypatch.setattr(main, "connect_executor", _async_none)
+    monkeypatch.setattr(main, "run_agent_turn", turn)
+    monkeypatch.setattr(main, "cleanup", cleanup)
+
+    status, returned = await main.run_report(drive_mode="off")
+    output = tmp_path / "outputs" / "reader-run" / "summary.md"
+    assert status == 0 and returned is store
+    assert output.read_text() == f"useful summary\n{marker}\n"
+    assert str(output) in capsys.readouterr().out
+    assert cleaned == [True]
+
+
+async def test_handoff_saves_verified_review_beside_original_summary(
+    monkeypatch, tmp_path, capsys
+):
+    source_marker = "BLAXEL_AGENT_RUN_ABC123"
+    source = f"saved summary\n{source_marker}\n"
+    review = f"fresh review\n{source_marker}\n{handoff.HANDOFF_MARKER}\n"
+    store = ContextStore(
+        mode="agent-drive",
+        run_id="shared-run",
+        access_url="https://access",
+        drive=R(name="drive"),
     )
 
+    class Files:
+        async def read(self, path):
+            return source if path == store.output_path else review
 
-@dataclass
-class Deletable:
-    deleted: bool = False
+    sandbox = R(metadata=R(name="handoff-worker"), fs=Files())
+    original = tmp_path / "outputs" / "shared-run" / "summary.md"
+    original.parent.mkdir(parents=True)
+    original.write_text(source)
+    cleaned = []
 
-    async def delete(self) -> None:
-        self.deleted = True
+    async def cleanup(*_args, **_kwargs):
+        cleaned.append(True)
 
-
-@dataclass
-class FailingDeletable(Deletable):
-    async def delete(self) -> None:
-        self.deleted = True
-        raise RuntimeError("delete failed")
-
-
-@pytest.mark.asyncio
-async def test_cleanup_deletes_session_and_sandbox() -> None:
-    session = Deletable()
-    sandbox = Deletable()
-
-    await runtime.cleanup(session, sandbox)  # type: ignore[arg-type]
-
-    assert session.deleted
-    assert sandbox.deleted
-
-
-@pytest.mark.asyncio
-async def test_cleanup_attempts_both_deletions_before_failing() -> None:
-    session = FailingDeletable()
-    sandbox = Deletable()
-
-    with pytest.raises(ExceptionGroup, match="cookbook cleanup failed"):
-        await runtime.cleanup(session, sandbox)  # type: ignore[arg-type]
-
-    assert session.deleted
-    assert sandbox.deleted
-
-
-def run_script(environment: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["bash", "run.sh"],
-        cwd=Path(__file__).parents[1],
-        env={"PATH": os.environ["PATH"], "PYTHON_BIN": sys.executable, **environment},
-        capture_output=True,
-        text=True,
-        check=False,
+    monkeypatch.setattr(local_output, "OUTPUT_ROOT", tmp_path / "outputs")
+    monkeypatch.setattr(run_receipt, "RECEIPT_DIR", tmp_path / ".runs")
+    monkeypatch.setattr(handoff, "resolve_openai_keys", lambda: ("app", "executor"))
+    monkeypatch.setattr(handoff, "resolve_blaxel_workspace", lambda: "ws")
+    monkeypatch.setattr(handoff, "resolve_blaxel_base_url", lambda: "https://api.blaxel.ai/v0")
+    monkeypatch.setattr(handoff, "openai_client", lambda _key: FakeOpenAIClient("handoff"))
+    monkeypatch.setattr(
+        handoff, "create_sandbox", lambda *_args, **_kwargs: _async_value(sandbox)
     )
-
-
-def test_run_script_rejects_reused_project_key_as_executor_key(tmp_path: Path) -> None:
-    result = run_script(
-        {
-            "HOME": str(tmp_path),
-            "OPENAI_API_KEY": "same-key",
-            "OPENAI_EXECUTOR_API_KEY": "same-key",
-            "BL_API_KEY": "test-only",
-            "BL_WORKSPACE": "test-only",
-        }
+    monkeypatch.setattr(handoff, "mount_context_store", _async_none)
+    monkeypatch.setattr(handoff, "install_codex", lambda *_args: _async_value("codex test"))
+    monkeypatch.setattr(handoff, "connect_executor", _async_none)
+    monkeypatch.setattr(
+        handoff,
+        "run_agent_turn",
+        lambda *_args, **_kwargs: _async_value(
+            f"done {source_marker} {handoff.HANDOFF_MARKER}"
+        ),
     )
+    monkeypatch.setattr(handoff, "cleanup", cleanup)
 
-    assert result.returncode == 1
-    assert "must be a separate restricted key" in result.stderr
-    assert "installing" not in result.stdout
+    assert await handoff.run_review(store) == 0
+    review_output = tmp_path / "outputs" / "shared-run" / "review.md"
+    assert original.read_text() == source
+    assert review_output.read_text() == review
+    assert str(review_output) in capsys.readouterr().out
+    assert cleaned == [True]
 
 
-def test_run_script_requires_workspace_with_api_key(tmp_path: Path) -> None:
-    result = run_script(
-        {"HOME": str(tmp_path), "OPENAI_API_KEY": "test-only", "BL_API_KEY": "test-only"}
+async def test_local_output_failure_still_runs_cleanup(monkeypatch, tmp_path):
+    store = ContextStore(mode="ephemeral", run_id="failed-save", access_url="https://access")
+    marker = [""]
+
+    class Files:
+        async def read(self, _path):
+            return marker[0]
+
+    sandbox = R(metadata=R(name="worker"), fs=Files())
+    blocked_root = tmp_path / "not-a-directory"
+    blocked_root.write_text("blocked")
+    cleaned = []
+
+    async def prepare(_sandbox, _store, *, marker: str):
+        marker_holder[0] = marker
+
+    marker_holder = marker
+
+    async def cleanup(*_args, **_kwargs):
+        cleaned.append(True)
+
+    monkeypatch.setattr(local_output, "OUTPUT_ROOT", blocked_root)
+    monkeypatch.setattr(run_receipt, "RECEIPT_DIR", tmp_path / ".runs")
+    monkeypatch.setattr(main, "resolve_openai_keys", lambda: ("app", "executor"))
+    monkeypatch.setattr(main, "resolve_blaxel_workspace", lambda: "ws")
+    monkeypatch.setattr(main, "resolve_blaxel_base_url", lambda: "https://api.blaxel.ai/v0")
+    monkeypatch.setattr(main, "resolve_context_store", lambda **_kwargs: _async_value(store))
+    monkeypatch.setattr(main, "openai_client", lambda _key: FakeOpenAIClient())
+    monkeypatch.setattr(main, "create_sandbox", lambda *_args, **_kwargs: _async_value(sandbox))
+    monkeypatch.setattr(main, "mount_context_store", _async_none)
+    monkeypatch.setattr(main, "prepare_context", prepare)
+    monkeypatch.setattr(main, "install_codex", lambda *_args: _async_value("codex test"))
+    monkeypatch.setattr(main, "connect_executor", _async_none)
+    monkeypatch.setattr(
+        main, "run_agent_turn", lambda *_args, **_kwargs: _async_value(marker_holder[0])
     )
-
-    assert result.returncode == 1
-    assert "BL_WORKSPACE is required alongside BL_API_KEY" in result.stderr
-
-
-def test_run_script_rejects_unknown_mode() -> None:
-    result = subprocess.run(
-        ["bash", "run.sh", "--unknown"],
-        cwd=Path(__file__).parents[1],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 1
-    assert "usage: ./run.sh [--handoff | --deploy-webhook | --reconnect]" in result.stderr
-
-
-async def test_cleanup_cancels_busy_session_and_waits_for_durable_idle(monkeypatch) -> None:
-    import httpx
-    from agent_api_sdk import AgentAPIError
-
-    calls = []
-
-    class BusySession:
-        async def delete(self):
-            calls.append("delete")
-            if calls.count("delete") < 3:
-                raise AgentAPIError(
-                    "session must be durably idle without required actions before deletion",
-                    409,
-                    "conflict_error",
-                    "conflict_error",
-                    httpx.Response(409),
-                )
-
-        async def cancel(self):
-            calls.append("cancel")
-
-    async def sleep(_):
-        pass
-
-    monkeypatch.setattr(runtime.asyncio, "sleep", sleep)
-    await runtime.cleanup(BusySession(), None)
-    assert calls == ["delete", "cancel", "delete", "delete"]
+    monkeypatch.setattr(main, "cleanup", cleanup)
+    with pytest.raises(OSError):
+        await main.run_report(drive_mode="off")
+    assert cleaned == [True]

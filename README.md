@@ -1,259 +1,163 @@
 # OpenAI Agents API on Blaxel
 
-Build agent features into your own product with a managed OpenAI agent backend. Your application submits work through the Agents API; OpenAI manages agent sessions and execution. This starter connects those agents to isolated Blaxel computers so they can run commands, work with files and create deliverables.
+Give an OpenAI-hosted agent a Blaxel computer to turn a source report into a summary. Then use Agent Drive to let a fresh agent review that work after the first computer is deleted.
 
-Blaxel supplies the compute, and Agent Drive keeps selected files after a computer is deleted. Your application still defines the experience, tool access and provisioning policy. The benefit is separating the managed agent service from the computers and files it uses.
-Agent Drive also gives an agent team a shared workspace: two specialists can work in parallel on separate computers, save their findings, and let a coordinator combine those files into one result. The [team example](examples/openai_agent_drive.py) demonstrates this with an engineering recovery plan and customer outreach plan.
-
-```mermaid
-flowchart LR
-    Agent["OpenAI-hosted agent"] --> Computer["Blaxel cloud computer<br/>(files, commands, tools)"]
-    Computer --> Output["Useful output<br/>(code, reports, datasets)"]
-    Output --> Choice{"Agent Drive enabled<br/>and available?"}
-    Choice -->|"Disabled or unavailable"| Done["Delete the computer<br/>temporary files disappear"]
-    Choice -->|"Yes (auto default)"| Drive["Agent Drive<br/>(selected files persist)"]
-    Drive --> Next["Fresh agent<br/>continues the work"]
-```
-
-## Prompt your agent
-
-Copy this into a coding agent with terminal access:
+The example uses a fictional billing incident. The first agent reads the supplied counts, owners, and deadlines and writes `summary.md`. The optional handoff starts a new session and computer, reads that saved summary, and writes `review.md`. You get local copies of the verified files to open and adapt.
 
 ```text
-Clone https://github.com/blaxel-ai/blaxel-openai-agents-api-cookbook.git and read AGENTS.md.
-
-Without printing or saving secrets, confirm that OPENAI_API_KEY is available, that Blaxel credentials are available (a `bl login` session, or BL_WORKSPACE and BL_API_KEY), and that the Agents API client in pyproject.toml can be installed. Tell me if OPENAI_EXECUTOR_API_KEY is missing, but continue.
-
-Run ./run.sh --handoff without changing source files. Report where summary.md and review.md were created, whether their contents were confirmed, and whether both temporary OpenAI sessions and Blaxel cloud computers were deleted.
-
-If setup or access blocks the run, stop and report the exact missing requirement or access page.
+sample_report.txt → agent + computer → summary.md → delete session and computer
+                                           │
+                                      Agent Drive
+                                           │
+                    fresh agent + computer → review.md → delete the second pair
 ```
+
+OpenAI manages the agent session. Blaxel supplies the isolated computer, and Agent Drive preserves its selected files. The cookbook uses the public OpenAI SDK and the prescribed self-hosted executor connection.
 
 ## Run it yourself
 
-You need Python 3.11–3.14, Git, an OpenAI API key with Agents API access, and a Blaxel workspace. `run.sh` creates the virtualenv and refreshes the dependencies from [`pyproject.toml`](pyproject.toml).
+You need Python 3.11 through 3.14, Git, two OpenAI keys, and a Blaxel workspace. The Agents API is a public beta. Dependencies install from public PyPI; private GitHub access is not required. These examples create hosted resources and invoke a model.
 
 ```bash
 git clone https://github.com/blaxel-ai/blaxel-openai-agents-api-cookbook.git
 cd blaxel-openai-agents-api-cookbook
 
 export OPENAI_API_KEY='<openai-project-key>'
-export OPENAI_EXECUTOR_API_KEY='<restricted-openai-key>'   # recommended, see Keys
-bl login                                                  # or export BL_WORKSPACE and BL_API_KEY
+export OPENAI_EXECUTOR_API_KEY='<openai-environment-key>'
+export BL_WORKSPACE='<blaxel-workspace>'
+export BL_API_KEY='<blaxel-api-key>'
 
 ./run.sh
 ```
 
+The launcher creates `.venv` and installs the runtime dependencies. Configuration placeholders are also listed in [.env.example](.env.example); export the values in your shell.
+
 ### Keys
 
-Two OpenAI keys keep the project key out of the agent's computer. `OPENAI_API_KEY` stays on your machine and creates sessions. `OPENAI_EXECUTOR_API_KEY` is the only key that enters the Blaxel Sandbox, where the Codex executor uses it to register with the session. Create it at [platform.openai.com/api-keys](https://platform.openai.com/api-keys) as a restricted key in the same project and owner as `OPENAI_API_KEY`, with the executor connection permission required by your project. When strict executor permissions are enabled, the key needs `api.agents.environments.connect`; **List models: Read** alone is insufficient. Ask your OpenAI representative if that permission is unavailable in your key settings. Without it, the cookbook warns and uses the project key inside the Sandbox.
+Create `OPENAI_API_KEY` on the [API keys page](https://platform.openai.com/api-keys) with Agents read/write and Responses write permissions. Create a separate `OPENAI_EXECUTOR_API_KEY` on the [Agents environment-key page](https://platform.openai.com/agents?tab=environments&environment_view=keys), in the same organization, project, and user or service account as the session. Set all other permissions to None. The environment key permits connecting the executor only; a generic restricted API key with List models access does not establish that permission.
+
+Both keys are required. Missing or identical keys fail before a worker is provisioned. The application key stays outside workers; only the environment key is passed as `CODEX_API_KEY` to `codex exec-server`. Follow the [OpenAI self-hosted setup](https://developers.openai.com/api/docs/guides/agents-api/environments/self-hosted#authentication) for the current dashboard flow.
 
 Blaxel credentials come from `bl login` ([install the CLI](https://docs.blaxel.ai/cli-reference/introduction); the cookbook uses the SDK's configured login and current workspace, printed on the first line of output) or from `BL_WORKSPACE` and `BL_API_KEY` ([API keys](https://docs.blaxel.ai/Security/Access-tokens#api-keys)). In a hosted Blaxel job they are injected automatically.
 
-The baseline run:
+## Open your result
 
-1. Starts one Blaxel cloud computer.
-2. Connects one OpenAI-hosted agent to it.
-3. Gives the agent a fictional support brief with counts, owners and deadlines, and asks for `summary.md`.
-4. Reads `summary.md` back and confirms it contains a marker from the source.
-5. Deletes the OpenAI session and cloud computer.
+A successful run reads [sample_report.txt](sample_report.txt), verifies the generated summary, saves a local copy, and confirms deletion of its OpenAI session and Blaxel computer. Open the printed `outputs/<run-id>/summary.md` path in your editor.
 
-Run the optional Agent Drive handoff to show a fresh agent continuing from the saved file:
+The summary should explain the billing failures and the proposed follow-up work. Read it as generated analysis: the automated check confirms that the agent used the supplied file, while you assess its interpretation.
+
+When Agent Drive is enabled, the run also prints the durable Drive path. Without Drive access, the baseline uses temporary Sandbox storage and still saves your local summary before removing the computer.
+
+The output includes these checks; IDs and wording vary:
+
+```text
+final status: idle
+confirmed generated file .../summary.md
+verified deletion of OpenAI session sess_...
+verified deletion of Blaxel sandbox openai-agents-api-...
+```
+
+A successful deletion request alone is insufficient: the script waits until the session is absent and the computer is absent or terminated.
+
+## Continue with a fresh agent
+
+With Agent Drive access in `us-was-1`, run:
 
 ```bash
 ./run.sh --handoff
 ```
 
-The handoff deletes the first session and computer before starting a fresh pair. The fresh agent reads the saved `summary.md`, identifies a strength and a caveat in the plan, creates `review.md`, and deletes the second temporary pair after verification.
+This command runs the full two-stage example. It creates a new summary, deletes the first session and computer, then starts a fresh pair that reads the saved file and writes a review. A previous baseline run is not required.
 
-To see parallel agents collaborating through files, read the [team snippet](examples/README.md) and run `.venv/bin/python -m examples.openai_agent_drive` from this configured checkout. Python schedules two specialists and waits for their verified outputs before the coordinator starts; Agent Drive stores the shared report, findings and final plan. All three sessions and computers are deleted after their work, while the Drive remains.
+Open `outputs/<run-id>/summary.md` and `outputs/<run-id>/review.md` from this run. Both files also remain together on Agent Drive. The second agent must recover the first file's verification marker before its review passes.
 
-## What success looks like
-
-```text
-Blaxel workspace: my-workspace (us-was-1)
-Agent Drive: using openai-agents-api-context
-started Blaxel sandbox openai-agents-api-ef1bcb12
-installed Codex codex-cli 0.154.0-alpha.6 in 6s
-created OpenAI session sess_...
-final status: idle
-confirmed generated file .../summary.md
-kept durable result on Agent Drive openai-agents-api-context:/openai-agents-api-cookbook/runs/<id>/summary.md
-deleted OpenAI session
-deleted Blaxel sandbox
-
-started Blaxel sandbox openai-agents-api-handoff-78c0a459
-confirmed saved source .../summary.md
-installed Codex codex-cli 0.154.0-alpha.6 in 5s
-created handoff OpenAI session sess_...
-final handoff status: idle
-confirmed review file .../review.md
-kept handoff result on Agent Drive openai-agents-api-context:/openai-agents-api-cookbook/runs/<id>/review.md
-deleted OpenAI session
-deleted Blaxel sandbox
-```
-
-The first agent must copy an exact marker from `sample_report.txt` into both its response and `summary.md`. The fresh agent must read that saved file and copy the original marker into `review.md` with a second marker. This proves the agents used the files instead of producing an ungrounded answer.
-
-Both computers and OpenAI sessions are temporary. When Agent Drive is enabled, only the files remain under one unique `runs/<id>/` folder.
-
-## A small Agent Drive example
-
-Try persistence without invoking a model:
-
-```bash
-.venv/bin/python examples/agent_drive.py
-```
-
-It saves a handoff note, deletes the first Sandbox, mounts the same Drive on a fresh Sandbox and checks the exact content. Both temporary Sandboxes receive deletion requests. The named Drive is retained deliberately. Agent Drive access in `us-was-1` is required.
-
-The core operation, for a Drive and Sandbox with matching access labels, is:
-
-```python
-await sandbox.drives.mount(
-    drive_name=drive.name,
-    mount_path="/workspace/context",
-    drive_path="/",
-)
-```
-
-The full example includes Drive permissions, creation, verification and cleanup.
-
-## Let a webhook handler run the Sandbox
-
-`run.sh` and `run.sh --handoff` are application-managed: the script starts the Sandbox and the executor itself. The Agents API also supports **webhook-managed** sandboxes, where the application only creates sessions and sends input, and a handler deployed once in your Blaxel account starts or reconnects the Sandbox when OpenAI asks for one. The [`webhook/`](webhook) directory is that handler.
-
-```mermaid
-flowchart LR
-    App["Your application<br/>(Agents API only)"] --> OpenAI["OpenAI Agents API<br/>(agent, session state)"]
-    OpenAI -->|"agent.session.action_required"| Handler["Blaxel-hosted handler"]
-    Handler -->|"start or reconnect"| Worker["Worker Sandbox<br/>codex exec-server"]
-    Worker -->|"outbound connection"| OpenAI
-    Worker --- Drive[("Agent Drive<br/>files outlive the worker")]
-```
-
-### Deploy the handler
-
-The controller creates workers on your behalf, so it needs a Blaxel API key rather than a `bl login` session.
-
-```bash
-export BL_WORKSPACE='<blaxel-workspace>'
-export BL_API_KEY='<blaxel-api-key>'
-./run.sh --deploy-webhook
-```
-
-The first deploy creates a saved OpenAI agent and prints `export OPENAI_AGENT_ID=...`; export it. It then starts the controller Sandbox `openai-agents-api-webhook-controller` in `us-was-1` and prints its public webhook URL. Register that URL in your OpenAI project under Settings, Webhooks, for `agent.session.action_required` and `agent.session.failed`, export the signing secret as `OPENAI_WEBHOOK_SECRET`, and run the deploy again. Until the secret is configured the endpoint answers `503`.
-
-The Blaxel API key must be valid for the selected workspace. A working local `bl login` does not validate an exported `BL_API_KEY`. Use a durable API key for a long-lived controller; a temporary login token can expire while the controller is still running.
-
-### Test a separate deployment
-
-The default deployment reuses its controller and replaces the running process. To keep a review deployment separate, choose a unique prefix before its first deploy:
-
-```bash
-export OPENAI_WEBHOOK_RESOURCE_PREFIX='openai-review'
-export OPENAI_AGENT_NAME='openai-review'
-unset OPENAI_AGENT_ID OPENAI_WEBHOOK_SECRET
-./run.sh --deploy-webhook
-```
-
-This creates `openai-review-controller` and names its workers `openai-review-worker-<session-hash>`. Export the new agent ID, register this deployment's URL, and export its own signing secret before the second deploy. Keep the same prefix for both deployment and `--reconnect`. Leave the prefix unset to preserve the original controller and worker names.
-
-### Prove reconnection with files preserved
-
-```bash
-./run.sh --reconnect
-```
-
-The application sends work through the Agents API; the proof script also uses Blaxel to delete and inspect workers. It creates a session for the saved agent and sends a first turn; the handler starts a worker, mounts that session's Agent Drive, and the agent writes `note.md`. The script then stops the executor, deletes that worker, waits for OpenAI's `session.environment.disconnected` event, and sends a second turn in the same session. OpenAI sends `agent.session.action_required` again, and the handler starts a replacement worker on the same Drive path. The run passes only when the replacement reads the marker the first worker wrote.
-
-```text
-created OpenAI session sess_...; the webhook handler owns worker openai-agents-api-worker-...
-confirmed .../note.md on worker openai-agents-api-worker-...
-deleted worker openai-agents-api-worker-...; OpenAI reported the environment disconnected after 5s; the session and its Agent Drive files remain
-confirmed replacement worker openai-agents-api-worker-... read the file the first worker wrote
-kept .../note.md and .../review.md on Agent Drive
-deleted OpenAI session
-deleted Blaxel sandbox
-```
-
-### How the handler behaves
-
-| Rule | Why |
-| --- | --- |
-| Wakes only on `agent.session.action_required` with `environment_connection`, after re-reading the session | `session.turn.created` and `agent.session.in_progress` arrive too late, and `function_call` actions belong to the application |
-| Never stops a worker on `idle` | `session.idle` can fire before the waiting input starts its turn |
-| One worker and a separate Drive per session, with matching access labels | A replacement reuses its session's files; unrelated sessions do not receive the same Drive access |
-| Holds the worker awake with process keep-alive while the executor runs | A Blaxel microVM suspends within seconds of API inactivity, even in the middle of a command |
-| Passes only `OPENAI_EXECUTOR_API_KEY` into workers | The project key and the signing secret stay on the controller |
-| Deletes the worker when the session reaches `failed`; otherwise leaves deletion to you | Deleting a session sends no webhook, so your application must delete the worker too |
-| Verifies every delivery, limits request bodies to 1 MiB and stores accepted work in SQLite before answering `200` | The queue survives controller restarts, and failed provisioning retries five times; newer deliveries survive an in-flight reconciliation |
-| Waits while a worker is still `DELETING` and treats a lingering `TERMINATED` record as absent | Blaxel deletes asynchronously, and creating over the terminated record yields a fresh Sandbox |
-
-Release compute deliberately: stop the executor process before deleting a worker, and send the next input only after OpenAI emits `session.environment.disconnected` (about five seconds later). Input sent while OpenAI still believes the executor is connected runs without file access and does not trigger the wake webhook.
-
-Workers live for `WORKER_TTL` (default `2h`) from creation; set it above your longest session. The controller Sandbox lives for `CONTROLLER_TTL` (default `24h`) from creation; redeploying its process does not renew that lifetime. Restarting its process keeps the SQLite queue; deleting or expiring the controller loses that local queue. When you are done, remove that deployment's OpenAI webhook, delete its controller and remaining workers, and delete its API sessions. Use the configured prefix to identify the deployment; preserve resources belonging to other deployments.
-
-## If Agent Drive is not enabled
-
-If the workspace does not have Agent Drive access, the default run still works with temporary sandbox storage and prints the exact Blaxel Console page where the signed-in workspace can request access.
-
-| Mode | What happens |
-| --- | --- |
-| `auto` | Use Agent Drive when available; otherwise show the access page and continue with temporary storage |
-| `required` | Stop with the access page when durable files are unavailable |
-| `off` | Always use temporary sandbox storage |
-
-`auto` is the default. Set the mode before running:
-
-```bash
-export BL_AGENT_DRIVE_MODE=off
-./run.sh
-```
-
-Agent Drive currently uses `us-was-1`. A different `BL_REGION` explains the mismatch and falls back to temporary storage in `auto` mode without showing the access page.
-
-The fresh-session handoff requires Agent Drive, so `./run.sh --handoff` treats `auto` as required and refuses `BL_AGENT_DRIVE_MODE=off`. Authentication, mount, configuration, and other platform failures also stop instead of silently falling back.
+Agent Drive carries files between the sessions. It does not copy the previous conversation or model memory.
 
 ## Make it yours
 
-Start with the pieces that are specific to the demo:
+Keep the lifecycle and change the task:
 
 | Change | Where |
 | --- | --- |
-| Input file | `sample_report.txt` |
-| Agent instructions and task | `main.py` |
-| Output file and confirmation rule | `main.py` |
-| Fresh-agent follow-up | `handoff.py` |
+| Your source document | [sample_report.txt](sample_report.txt) |
+| The first agent's instructions, prompt, and output check | [main.py](main.py) |
+| The fresh agent's follow-up task and check | [handoff.py](handoff.py) |
 
-Keep the lifecycle and safety pieces:
+The baseline stays one session, one computer, and one file task. The handoff adds a second pair after the first has been deleted. Keep an output check tied to your input so a completed turn alone cannot pass as a useful result.
 
-- OpenAI session and self-hosted environment connection
-- Blaxel Sandbox creation and cleanup, or the webhook handler when OpenAI should trigger it
-- Agent Drive access handling, explicit sharing and workload-label permissions
-- durable turn completion, deterministic confirmation, and failure diagnostics
+## Prompt your coding agent
 
-Agent Drive shares files. It does not merge model memory or OpenAI conversation history. The baseline and handoff intentionally share one Drive between trusted runs. Each team example uses its own Drive and team-specific workload label. The webhook handler uses a distinct Drive and enforced workload-label permissions for each session. A mount subdirectory alone is not an isolation boundary.
+After configuring the credentials above, you can give a coding agent this task:
+
+```text
+Clone https://github.com/blaxel-ai/blaxel-openai-agents-api-cookbook.git and read AGENTS.md.
+
+Check that Python 3.11 through 3.14, OPENAI_API_KEY, a distinct OPENAI_EXECUTOR_API_KEY, and Blaxel credentials are configured. Do not print or save secrets. Stop before creating resources if a prerequisite is missing.
+
+Run ./run.sh without changing source. Open its local outputs/<run-id>/summary.md, report what the agent produced, and confirm that the OpenAI session and worker were deleted. If Agent Drive is available, run ./run.sh --handoff, open the summary and review from that run, and verify that a fresh session and computer continued from the saved file after the first pair was deleted.
+
+Report the local output paths, retained Drive, and cleanup result. If a run fails, use its documented recovery path and report the exact failure. Do not patch source, resend uncertain input, deploy webhooks, or touch unrelated resources.
+```
+
+## Storage and cleanup
+
+Agent Drive is optional for the baseline and required for the handoff. Choose a policy before running:
+
+| `BL_AGENT_DRIVE_MODE` | Behavior |
+| --- | --- |
+| `auto` (default) | Use Agent Drive when available; otherwise use temporary storage and explain the access or region limitation |
+| `required` | Stop when Agent Drive is unavailable |
+| `off` | Use temporary Sandbox storage |
+
+For a disposable baseline:
+
+```bash
+BL_AGENT_DRIVE_MODE=off ./run.sh
+```
+
+Authentication, mount, and other platform errors stop the run. They do not trigger a silent fallback. The handoff refuses `off` and requires Drive access in `us-was-1`.
+
+Temporary sessions and computers are deleted by the scripts. Local files in `outputs/` and files on Agent Drive are retained intentionally. Inspect or export the Drive's files before deleting it.
+
+If a run is interrupted, use its printed receipt to resume cleanup from the same Blaxel workspace and endpoint:
+
+```bash
+.venv/bin/python cleanup_run.py .runs/<run-id>.json
+```
+
+Recovery acts on recorded owned resources and preserves the Drive and local output. Keep the receipt until cleanup is verified.
+
+An older receipt without a complete ownership target is refused. After independently confirming its original workspace and API endpoint, bind those values with `cleanup_run.py <receipt> --bind-target --expected-workspace <workspace> --expected-base-url <resolved-api-url>`, then run recovery. A complete target cannot be rebound.
+
+## More examples
+
+These are optional extensions after the first result:
+
+| Goal | Guide |
+| --- | --- |
+| Combine two specialists' findings into one plan | [Parallel team](examples/README.md#combine-two-specialists-findings) |
+| Verify persistent files without invoking a model | [Storage-only handoff](examples/README.md#try-persistence-without-a-model) |
+| Let OpenAI request workers and reconnect the same session | [Webhook deployment and reconnect](webhook/README.md) |
 
 <details>
 <summary>Configuration and repository map</summary>
 
 ### Defaults and versions
 
-The Agents API is in beta and its server contract moves, so the cookbook tracks what OpenAI ships instead of pinning old versions: the client follows the `main` branch of OpenAI's preview repository, the Codex executor follows the `alpha` npm tag that OpenAI's own examples use, and the Blaxel SDK accepts any `0.4.x` from `0.4.7`. The table records the exact versions of the last verified run. The launcher forces a refresh because preview commits can retain the same package version.
+The public API uses `AsyncOpenAI` and `client.beta.agents`. The supported dependency ranges are `openai>=3.13.0,<4` and `blaxel>=0.4.7,<0.5`; the Codex executor follows the `alpha` tag prescribed by OpenAI. Run `python -m pip install --upgrade -e '.[dev]'` to update deliberately, and rerun lifecycle checks when the SDK or executor changes. The same `OPENAI_MODEL` override applies to the baseline, handoff, team, and newly created saved agents.
 
-| Setting | Value | Verified locally (2026-09-07) |
+| Setting | Supported policy | Migration validation |
 | --- | --- | --- |
-| Model | `gpt-5.6-sol` | same |
-| Region | `us-was-1` | same |
-| OpenAI Agents API client | `main` | `076c5f3` (0.3.1) |
-| Blaxel Python SDK | `>=0.4.7,<0.5` | `0.4.8` |
-| Codex executor | `@openai/codex@alpha` | `0.154.0-alpha.6` |
-| Sandbox lifetime | 15 minutes | same |
+| Python | 3.11 through 3.14 | Clean install and checks passed on all four Python versions (September 11, 2026) |
+| OpenAI public Python SDK | `>=3.13.0,<4` | 3.13.0 tested locally and live |
+| Blaxel Python SDK | `>=0.4.7,<0.5` | 0.4.8 tested locally and live |
+| Codex executor | `@openai/codex@alpha` | 0.155.0-alpha.3.10 tested; every worker prints its resolved version |
+| Default model | `gpt-5.6-sol` | Override with `OPENAI_MODEL` |
+| Region / baseline lifetime | `us-was-1` / 15 minutes | Recorded per run |
 
-The baseline, fresh-session handoff, parallel team, storage-only example, temporary-storage baseline and local-controller replacement proof passed with this combination. All 113 unit tests pass on Python 3.14 and a clean Python 3.11 install. The latter used locally signed deliveries based on real OpenAI required actions and verified real workers, disconnect events and Drive isolation. A fresh checkout also passed isolated hosted deployment, signed redeployment and real OpenAI-origin webhook reconnection. Hosted tampered signatures returned 400, oversized bodies returned 413, and a correctly scoped existing worker adopted its session Drive. Temporary test resources were cleaned up; the existing long-lived deployment was preserved.
+September 11, 2026 candidate validation passed the Drive-off baseline, Drive-backed baseline and fresh-session handoff, parallel team, storage-only handoff, hosted controller deployment/redeployment, and OpenAI-origin worker reconnect. File verification and temporary-resource deletion were checked in each applicable mode. The offline suite contains 185 passing tests on Python 3.11–3.14. See [VALIDATION.md](VALIDATION.md) for scope and remaining release gates. The September 7 preview-client results describe the previous implementation.
 
-The recipe submits input once to an idle session, waits up to 180 seconds for its new turn to complete (600 seconds for webhook-managed turns, including cold worker provisioning), and reads that turn's retained final answer. It rejects concurrent input and paginates retained items with a 1,000-item search bound and a 1 MiB answer limit. Live event-stream delivery is not required. Cleanup cancels unfinished work when OpenAI requires durable idle before deletion.
+The recipe submits input once to an idle session, waits up to 180 seconds for its new turn to complete (600 seconds for webhook-managed turns, including cold worker provisioning), and reads that turn's retained final answer. It rejects concurrent input and paginates retained items with a 1,000-item search bound and a 1 MiB answer limit. Turn completion uses durable state. Connection and deliberate disconnect checks also observe their lifecycle state or live stream. Cleanup cancels unfinished work when OpenAI requires durable idle before deletion.
 
 Override the model, region, and executor with `OPENAI_MODEL`, `BL_REGION`, and `CODEX_VERSION`. Set `BL_AGENT_DRIVE_NAME` to choose another reusable Drive.
 
@@ -265,6 +169,7 @@ Override the model, region, and executor with `OPENAI_MODEL`, `BL_REGION`, and `
 | `handoff.py` | fresh agent and computer continue from the saved file |
 | `context_store.py` | Agent Drive access, scoped storage, and fallback |
 | `runtime.py` | credentials, Codex executor, durable turn completion, diagnostics, and cleanup |
+| `run_receipt.py` | secret-free exact resource ownership and interrupted-run cleanup |
 | `run.sh` | access preflight and one-command setup for every mode |
 | `webhook/handler.py` | Blaxel-hosted controller: signature check, durable queue, one worker per session |
 | `webhook/deploy.py` | deploys the controller to a Sandbox and prints the webhook URL |
@@ -279,14 +184,36 @@ Override the model, region, and executor with `OPENAI_MODEL`, `BL_REGION`, and `
 
 ## Verify changes
 
+Install contributor tools explicitly; the ordinary launcher installs only runtime dependencies.
+
 ```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -e '.[dev]'
+.venv/bin/python -m pip check
 .venv/bin/python -m pytest
 .venv/bin/ruff check .
-.venv/bin/python -m compileall -q main.py handoff.py context_store.py runtime.py webhook tests
+.venv/bin/python -m compileall -q main.py handoff.py context_store.py runtime.py run_receipt.py resource_records.py resource_target.py local_output.py cleanup_run.py webhook examples tests
 bash -n run.sh
 ```
 
 `./run.sh`, `./run.sh --handoff`, `./run.sh --deploy-webhook`, and `./run.sh --reconnect` create hosted resources; all but the deploy invoke a model.
+
+## Troubleshooting
+
+| Error or symptom | Cause and action |
+| --- | --- |
+| `invalid_beta`, missing beta header, or `agent_api_sdk` import error | Install the public dependencies from the current cookbook with `python -m pip install -e '.[dev]'`. Public `openai` supplies `OpenAI-Beta: agents=v1`; raw HTTP clients must supply it too. |
+| Unknown `session.input.message` event | Use the current public client and `agent.session.input.message`. Update the checkout; do not patch generated SDK files. |
+| Executor `403` or missing `api.agents.environments.connect` | Create an environment key on the Agents dashboard. Confirm the same organization, project, and owner as the application key. Do not substitute the application key. |
+| Exported Blaxel key fails while `bl login` works | The deployed controller uses the exported key. Replace it with a valid key for `BL_WORKSPACE`; a local login does not prove that key works. |
+| Executor exits or installation fails | Check the reported worker, process status, and bounded logs. Verify Node/npm, Codex, ripgrep, outbound registration, and WebSocket access. |
+| Connection or turn deadline expires | Inspect the exact session and controller/worker IDs. OpenAI allows five minutes for an input-time connection; an expired request does not replay itself when a worker connects later. Do not blindly resend uncertain input. |
+| Agent Drive unavailable or wrong region | Request access at the printed Console URL, use `us-was-1`, or choose `BL_AGENT_DRIVE_MODE=off` for the baseline. Handoff, team, and file-preserving reconnect require Drive access. Auth and mount errors are not fallback cases. |
+| Webhook returns `503` | Register the deployment URL and export its signing secret before redeploying. Controller health alone does not prove signing is configured. |
+| No worker after submitting webhook work | Confirm the saved agent, registration events, signature status, delivery history, and queued/failed jobs on this deployment. Successful local signing is not proof of an OpenAI-origin delivery. |
+| Turn is `failed`, `cancelled`, or idle without a new completed turn | Inspect the original error. Idle alone is not success; require the current turn and independently verified file. |
+| Cleanup `409` | Retry only the bounded cancellation/cleanup path for the exact receipt. If `no durably bound CCA root` persists, retain the session/request IDs for OpenAI support; do not start an extra model turn as a deletion workaround. |
+| Interrupted process | Use its exact `.runs` receipt to inspect and clean up owned resources. Verify session 404 and worker absence or `TERMINATED`; a deletion request or TTL is not proof. |
 
 ## Links
 

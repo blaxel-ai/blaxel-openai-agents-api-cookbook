@@ -1,162 +1,135 @@
-from types import SimpleNamespace as Record
+from types import SimpleNamespace as R
 
 import pytest
 
 import runtime
 
 
-def final_item(turn_id="new", text="verified answer"):
-    return {
-        "turn_id": turn_id,
-        "role": "assistant",
-        "status": "completed",
-        "phase": "final_answer",
-        "content": [{"type": "output_text", "text": text}],
-    }
-
-
-class Session:
+class Resource:
     def __init__(self):
         self.inputs = []
-        self.turn_status = "completed"
-        self.status = "idle"
         self.pending = 0
         self.concurrent = False
-        self.item_pages = []
+        self.turn_status = "completed"
+        self.status = "idle"
+        self.pages = []
+        self.sessions = self
+        self.turns = self
+        self.items = self
+        self.events = self
+        self.agents = R(sessions=self)
+        self.beta = R(agents=self.agents)
 
-    async def retrieve(self):
-        return Record(status=self.status)
+    async def retrieve(self, session_id):
+        return R(id=session_id, status=self.status, error=None, required_actions=[])
 
-    async def input(self, prompt):
-        self.inputs.append(prompt)
+    async def create(self, session_id, *, events, idempotency_key=None):
+        self.inputs.append((events, idempotency_key))
 
-    async def list_turns(self, *, limit, order):
-        assert order == "desc"
-        old = Record(id="old", status="completed")
+    async def list(self, session_id, *, limit, order, after=None):
+        if limit == 50:
+            self.pages.append(after)
+            item = R(
+                turn_id="new",
+                role="assistant",
+                type="message",
+                status="completed",
+                phase="final_answer",
+                output_text="verified answer",
+            )
+            return R(
+                data=[item] if after else [],
+                has_more=after is None,
+                next_page_info=lambda: R(params={"after": "page2"}) if after is None else None,
+            )
+        old = R(id="old", status="completed", error=None)
         if not self.inputs or self.pending:
             self.pending = max(0, self.pending - 1)
-            return Record(data=[old], has_more=False)
-        new = Record(id="new", status=self.turn_status, error="test failure")
-        return Record(data=[new, Record(id="other") if self.concurrent else old], has_more=True)
-
-    async def list_items(self, *, limit, order, after):
-        assert limit == 50 and order == "desc"
-        self.item_pages.append(after)
-        if after is None:
-            return Record(data=[final_item("old", "stale")], has_more=True, after="page2")
-        return Record(data=[final_item()], has_more=False, after=None)
+            return R(data=[old], has_more=False)
+        new = R(id="new", status=self.turn_status, error="failure")
+        return R(data=[new, R(id="other") if self.concurrent else old], has_more=True)
 
 
-async def test_turn_uses_saved_answer_without_events_or_resubmitting(monkeypatch):
-    session = Session()
-    session.pending = 2
+async def test_turn_uses_current_event_and_typed_paginated_answer(monkeypatch):
+    client = Resource()
+    client.pending = 2
 
     async def no_wait(_):
         pass
 
     monkeypatch.setattr(runtime.asyncio, "sleep", no_wait)
-    assert await runtime.run_agent_turn(session, None, "do work") == "verified answer"
-    assert session.inputs == ["do work"]
-    assert session.item_pages == [None, "page2"]
+    assert (
+        await runtime.run_agent_turn(client, "sess", None, "do work", idempotency_key="stable")
+        == "verified answer"
+    )
+    assert len(client.inputs) == 1 and client.inputs[0][1] == "stable"
+    assert client.inputs[0][0][0]["type"] == "agent.session.input.message"
+    assert client.pages == [None, "page2"]
 
 
 @pytest.mark.parametrize("status", ["failed", "cancelled"])
-async def test_turn_rejects_failed_turn_even_when_session_is_idle(status):
-    session = Session()
-    session.turn_status = status
+async def test_failed_turn_is_rejected(status):
+    client = Resource()
+    client.turn_status = status
     with pytest.raises(RuntimeError, match=f"turn {status}"):
-        await runtime.run_agent_turn(session, None, "do work")
-    assert len(session.inputs) == 1
+        await runtime.run_agent_turn(client, "sess", None, "work")
+    assert len(client.inputs) == 1
 
 
-async def test_turn_rejects_active_session_without_input():
-    session = Session()
-    session.status = "running"
+async def test_active_session_rejected_without_input():
+    client = Resource()
+    client.status = "in_progress"
     with pytest.raises(RuntimeError, match="idle session"):
-        await runtime.run_agent_turn(session, None, "do work")
-    assert not session.inputs
+        await runtime.run_agent_turn(client, "sess", None, "work")
+    assert not client.inputs
 
 
-async def test_turn_rejects_ambiguous_concurrent_input():
-    session = Session()
-    session.concurrent = True
+async def test_concurrent_input_rejected():
+    client = Resource()
+    client.concurrent = True
     with pytest.raises(RuntimeError, match="Concurrent input"):
-        await runtime.run_agent_turn(session, None, "do work")
+        await runtime.run_agent_turn(client, "sess", None, "work")
 
 
-async def test_missing_turn_times_out_without_resubmission():
-    session = Session()
-    session.pending = 100
-    with pytest.raises(TimeoutError):
-        await runtime.run_agent_turn(session, None, "do work", timeout_seconds=0.01)
-    assert len(session.inputs) == 1
+async def test_timeout_never_resubmits():
+    client = Resource()
+    client.pending = 100
+    with pytest.raises(RuntimeError, match="turn timed out") as raised:
+        await runtime.run_agent_turn(client, "sess", None, "work", timeout_seconds=0.01)
+    assert isinstance(raised.value.__cause__, TimeoutError)
+    assert len(client.inputs) == 1
 
 
-@pytest.mark.parametrize("text,match", [("", "empty final answer"), ("x" * 9, "1 MiB")])
-async def test_empty_and_oversized_answers_are_rejected(monkeypatch, text, match):
-    class InvalidAnswer(Session):
-        async def list_items(self, **_):
-            return Record(data=[final_item(text=text)], has_more=False)
+async def test_pagination_cannot_loop(monkeypatch):
+    client = Resource()
+    original = client.list
 
-    monkeypatch.setattr(runtime, "MAX_OUTPUT_BYTES", 8)
-    with pytest.raises(RuntimeError, match=match):
-        await runtime.run_agent_turn(InvalidAnswer(), None, "do work")
+    async def bad(session_id, *, limit, order, after=None):
+        if limit == 50:
+            return R(data=[], has_more=True, next_page_info=lambda: R(params={"after": "same"}))
+        return await original(session_id, limit=limit, order=order, after=after)
 
-
-async def test_pagination_cannot_loop_forever():
-    class BadCursor(Session):
-        async def list_items(self, **_):
-            return Record(data=[], has_more=True, after="same")
-
+    client.list = bad
     with pytest.raises(RuntimeError, match="pagination did not advance"):
-        await runtime.run_agent_turn(BadCursor(), None, "do work")
+        await runtime.run_agent_turn(client, "sess", None, "work")
 
 
-def test_python_entrypoint_rejects_project_key_reuse(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "same")
-    monkeypatch.setenv("OPENAI_EXECUTOR_API_KEY", "same")
-    with pytest.raises(RuntimeError, match="separate restricted key"):
-        runtime.resolve_openai_keys()
+@pytest.mark.parametrize("text,match", [("", "empty final answer"), ("123456789", "1 MiB")])
+async def test_empty_and_oversized_typed_answers(monkeypatch, text, match):
+    client = Resource()
+    monkeypatch.setattr(runtime, "MAX_OUTPUT_BYTES", 8)
 
+    async def page(*_, **__):
+        item = R(
+            turn_id="turn",
+            role="assistant",
+            type="message",
+            status="completed",
+            phase="final_answer",
+            output_text=text,
+        )
+        return R(data=[item], has_more=False)
 
-async def test_slow_provisioning_can_use_a_larger_bounded_budget(monkeypatch):
-    import asyncio
-
-    session = Session()
-    session.pending = 2
-    original_sleep = asyncio.sleep
-
-    async def slow_setup(_):
-        await original_sleep(0.03)
-
-    monkeypatch.setattr(runtime.asyncio, "sleep", slow_setup)
-    assert (
-        await runtime.run_agent_turn(session, None, "do work", timeout_seconds=0.5)
-        == "verified answer"
-    )
-    assert session.inputs == ["do work"]
-
-
-async def test_sdk_retrieve_refreshes_cached_status_used_by_callers():
-    from unittest.mock import AsyncMock
-
-    from agent_api_sdk import AsyncAgentSession, SessionInfo
-
-    payload = {
-        "id": "sess_status",
-        "object": "agent.session",
-        "created_at": 1,
-        "last_active_at": 1,
-        "status": "in_progress",
-        "agent": {},
-        "environment": {
-            "type": "self_hosted",
-            "environment_id": "env_status",
-            "workspace_directory": "/workspace",
-        },
-    }
-    client = Record(request=AsyncMock(return_value={**payload, "status": "idle"}))
-    session = AsyncAgentSession(client=client, info=SessionInfo.from_payload(payload))
-    assert session.status == "in_progress"
-    info = await session.retrieve()
-    assert info.status == session.status == "idle"
+    client.list = page
+    with pytest.raises(RuntimeError, match=match):
+        await runtime.completed_turn_output(client, "sess", "turn")
